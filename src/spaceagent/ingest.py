@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from . import stats
+from . import spatial, stats
 from .store import Store, build_store
 
 SECTIONS = ["overview", "columns", "samples", "cell_types", "markers", "panel",
@@ -32,7 +32,7 @@ def _md_table(df: pd.DataFrame, floatfmt: str = "{:.3g}", max_rows: int = 60) ->
              "|" + "---|" * (len(cols) + 1)]
     for i, row in df.iterrows():
         cells = [floatfmt.format(v) if isinstance(v, (float, np.floating)) else str(v) for v in row]
-        lines.append("| " + " | ".join([str(i)] + cells) + " |")
+        lines.append("| " + " | ".join(c.replace("|", "\\|") for c in [str(i)] + cells) + " |")
     return "\n".join(lines)
 
 
@@ -232,17 +232,13 @@ class CardBuilder:
             return
         t0 = time.time()
         o = self.s.obs
-        labels, idx = stats.codes_for(o, [self.ct])
-        sections = stats.codes_for(o, [self.sample])[0]
-        sec_names = stats.codes_for(o, [self.sample])[1]
-        counts = stats.neighbor_counts(self.s.xy, labels, len(idx), sections, k=self.k)
-        names = [str(x) for x in idx]
+        counts, names = spatial.pair_counts(self.s, self.ct, k=self.k)
         rows = []
         for sec, cnt in counts.items():
             lo = stats.enrichment_log2oe(cnt)
             for i, a in enumerate(names):
                 for j, b in enumerate(names):
-                    rows.append((str(sec_names[sec]), a, b, int(cnt[i, j]), float(lo[i, j])))
+                    rows.append((sec, a, b, int(cnt[i, j]), float(lo[i, j])))
         df = pd.DataFrame(rows, columns=["sample", "centre", "neighbour", "count", "log2_oe"])
         df.set_index("sample").to_parquet(self.tables / "nhood_by_sample.parquet")
         lines = ["## Neighbourhoods", "",
@@ -351,6 +347,11 @@ def ingest(h5ad, out, config_path=None, layer=None, rebuild_store=False, k_neigh
         log(f"  store built in {time.time() - t0:.0f}s")
     else:
         store = Store(out)
+    if cfg.get("organism"):
+        store.meta["organism"] = cfg["organism"]
+        store.save_meta()
+    if store.role("sample"):
+        spatial.ensure_knn(store, log=log)
     CardBuilder(store, cfg, k_neighbors=k_neighbors, log=log).run()
     log(f"card written to {store.card_dir / 'card.md'}")
     return store

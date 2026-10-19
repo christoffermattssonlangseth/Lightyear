@@ -125,27 +125,6 @@ def compare_samples(pb: pd.DataFrame, sample_groups: pd.Series, a: str, b: str,
     return res.sort_values("delta", key=np.abs, ascending=False)
 
 
-def neighbor_counts(xy: np.ndarray, labels: np.ndarray, n_labels: int, sections: np.ndarray,
-                    k: int = 10, mask: np.ndarray | None = None) -> dict:
-    """Per-section counts of (centre label, neighbour label) pairs over the kNN graph.
-
-    Returns {section: (n_labels x n_labels) counts}. Neighbours never cross sections.
-    """
-    out = {}
-    for sec in np.unique(sections):
-        idx = np.flatnonzero(sections == sec)
-        if mask is not None:
-            idx = idx[mask[idx]]
-        if len(idx) <= k:
-            continue
-        tree = cKDTree(xy[idx])
-        _, nb = tree.query(xy[idx], k=k + 1, workers=-1)
-        centre = np.repeat(labels[idx], k)
-        neigh = labels[idx][nb[:, 1:]].ravel()
-        out[sec] = np.bincount(centre * n_labels + neigh, minlength=n_labels ** 2).reshape(n_labels, n_labels)
-    return out
-
-
 def enrichment_log2oe(counts: np.ndarray, eps: float = 1.0) -> np.ndarray:
     """log2(observed / expected) where expected assumes neighbours drawn from the section's labels."""
     tot = counts.sum()

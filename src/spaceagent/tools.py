@@ -186,3 +186,185 @@ def add_finding(s: Store, title: str, text: str) -> str:
 def read_findings(s: Store) -> str:
     p = s.findings_path()
     return p.read_text() if p.exists() else "no findings recorded yet"
+
+
+# -- annotation / derived columns ------------------------------------------------
+def describe_structures(s: Store) -> str:
+    """What the dataset contains beyond obs: source obsm/obsp/layers/uns, store graph, derived columns."""
+    sch = s.meta["schema"]
+    lines = [f"source: {s.meta['source']}", f"expression: {s.meta['expr_layer']} {s.meta.get('expr_description', '')}",
+             f"coordinates: {sch['spatial_key']}"]
+    for k in ("obsm", "layers", "uns"):
+        if sch.get("structures", {}).get(k):
+            lines.append(f"{k}: " + ", ".join(sch["structures"][k]))
+    for g, d in (sch.get("graphs") or {}).items():
+        lines.append(f"source obsp graph `{g}`: {d}")
+    if (s.path / "knn_idx.npy").exists():
+        lines.append(f"store spatial kNN graph: k={s.knn[0].shape[1]} per section (used by all neighbour tools)")
+    der = s.meta.get("derived", {})
+    if der:
+        lines.append("\nderived columns (created by tools, usable everywhere):")
+        lines += [f"- `{n}` ({d['role']}): {d['description']}" for n, d in der.items()]
+    return "\n".join(lines)
+
+
+def markers(s: Store, column: str, filters: dict | None = None, n_top: int = 10) -> str:
+    from .analysis import markers_for
+    lines = [f"one-vs-rest markers of `{column}` (lfc = mean log-expr difference vs other categories)"
+             + (f", cells {filters}" if filters else "")]
+    for cat, (n, df) in markers_for(s, column, filters, n_top).items():
+        lines.append(f"- **{cat}** (n={n:,}): " +
+                     ", ".join(f"{g} ({r.lfc_vs_rest:.2f}, {100 * r.frac:.0f}%)" for g, r in df.iterrows()))
+    return "\n".join(lines)
+
+
+def annotate(s: Store, column: str, filters: dict | None = None, tissue: str | None = None) -> str:
+    from .analysis import annotate_suggest
+    df = annotate_suggest(s, column, filters, tissue=tissue)
+    return ("Marker-database matches (PanglaoDB + CellMarker, hypergeometric on panel genes). Hints only: "
+            "judge with tissue context and marker specificity.\n\n" + _md_table(df, max_rows=100))
+
+
+def gate(s: Store, name: str, feature: str, threshold: float, within: dict | None = None, above: bool = True) -> str:
+    from .analysis import gate as _gate
+    r = _gate(s, name, feature, threshold, within, above)
+    return (f"created `{name}`: {r['description']}; {r['n_true']:,} of {r['n_within']:,} cells True. "
+            f"Use it in filters ({{'{name}': True}}), composition(of='{name}') or case_control.")
+
+
+def score_genes(s: Store, name: str, genes: list[str]) -> str:
+    from .analysis import score_genes as _score
+    r = _score(s, name, genes)
+    return f"created numeric column `{name}`: {r['description']}. Use it like a gene in expression/compare/plots."
+
+
+def compute_niches(s: Store, name: str, n_niches: int = 8, features: str = "composition", k: int = 15,
+                   max_dist: float | None = None) -> str:
+    from .spatial import compute_niches as _cn
+    r = _cn(s, name, n_niches, features, k, max_dist)
+    comp = r["composition"]
+    lines = [f"created `{name}`: {r['description']}", "", "own cell-type composition of each niche (top 4):"]
+    for niche, row in comp.iterrows():
+        top = row.sort_values(ascending=False).head(4)
+        lines.append(f"- **{niche}** ({int(r['n_cells'].get(niche, 0)):,} cells): " +
+                     ", ".join(f"{c} {100 * v:.0f}%" for c, v in top.items()))
+    if s.role("group"):
+        lines += ["", composition(s, name, [s.role("sample")], summarize_by_group=s.role("group"))]
+    return "\n".join(lines)
+
+
+# -- spatial ------------------------------------------------------------------
+def neighbourhood_of(s: Store, cells: dict, k: int = 15, column: str | None = None, by: str | None = None) -> str:
+    from .spatial import neighbourhood_of as _no
+    df = _no(s, cells, k, column, by=by)
+    frac = df["frac"].T.round(3)
+    enr = df["log2_vs_section"].T.round(2)
+    return (f"neighbours (k={k}) of cells {cells}: mean fraction of each type, and log2 enrichment vs the "
+            "section's overall composition\n\nfraction:\n\n" + _md_table(frac, max_rows=100)
+            + "\n\nlog2 enrichment:\n\n" + _md_table(enr, max_rows=100))
+
+
+def nhood_enrichment(s: Store, samples: list[str] | None = None, centre: str | None = None, k: int = 10,
+                     n_perm: int = 50, by: str | None = None) -> str:
+    from .spatial import nhood_enrichment as _ne
+    df = _ne(s, samples, k, n_perm)
+    if centre:
+        df = df[df["centre"] == centre]
+    if by:
+        df["grp"] = _sample_groups(s, by).reindex(df["sample"]).to_numpy()
+        piv = df.pivot_table(index=["centre", "neighbour"], columns="grp", values="z").round(1)
+    else:
+        piv = df.pivot_table(index=["centre", "neighbour"], columns="sample", values="z").round(1)
+    piv = piv.reindex(piv.abs().max(axis=1).sort_values(ascending=False).index)
+    return (f"neighbourhood enrichment z-scores (k={k}, {n_perm} label permutations within each section; "
+            "|z|>2 ≈ beyond chance)\n\n" + _md_table(piv.reset_index().set_index("centre"), max_rows=60))
+
+
+def co_occurrence(s: Store, a: dict, b: dict, distances: list[float] | None = None, by: str | None = None) -> str:
+    from .spatial import co_occurrence as _co
+    df = _co(s, a, b, distances)
+    if by:
+        df["grp"] = _sample_groups(s, by).reindex(df["sample"]).to_numpy()
+        piv = df.pivot_table(index="distance", columns="grp", values="ratio")
+    else:
+        piv = df.pivot_table(index="distance", columns="sample", values="ratio")
+    return (f"co-occurrence of {b} around {a}: P(b within d)/P(b in section); >1 = enriched\n\n"
+            + _md_table(piv.round(2)))
+
+
+def spatial_autocorrelation(s: Store, genes: list[str] | None = None, samples: list[str] | None = None,
+                            n_top: int = 30) -> str:
+    from .spatial import morans_i
+    if samples is None:
+        smp = s.obs[s.role("sample")].astype(str)
+        samples = list(smp.drop_duplicates().iloc[:3])
+    df = morans_i(s, genes, samples)
+    df["mean"] = df.mean(1)
+    df = df.sort_values("mean", ascending=False)
+    return (f"Moran's I on the 10-NN graph in samples {samples} (high = spatially patterned, ~0 = random)\n\n"
+            + _md_table(df.head(n_top).round(3)))
+
+
+def gradient(s: Store, feature: str, target: dict, cells: dict | None = None, bins: list[float] | None = None,
+             by: str | None = None) -> str:
+    from .spatial import gradient as _gr
+    df = _gr(s, feature, target, cells, bins, by)
+    return (f"mean {feature} in {cells or 'all cells'} by distance (coordinate units) to nearest {target}"
+            + (f", averaged over samples per `{by}`" if by else "") + "\n\n" + _md_table(df.round(3)))
+
+
+# -- case / control ---------------------------------------------------------------
+def case_control(s: Store, a: str, b: str, column: str | None = None, n_top: int = 15) -> str:
+    from .analysis import case_control as _cc
+    df = _cc(s, a, b, column)
+    out_dir = s.path / "analyses"
+    out_dir.mkdir(exist_ok=True)
+    path = out_dir / f"case_control_{a}_vs_{b}.parquet"
+    df.to_parquet(path)
+    n_a, n_b = int(df["n_a"].iat[0]), int(df["n_b"].iat[0])
+    shown = ["feature", "source", "mean_a", "mean_b", "effect", "effect_unit", "hedges_g", "p"]
+    lines = [f"# {a} (n={n_a} samples) vs {b} (n={n_b})",
+             "Every feature is a per-sample value; Hedges g = standardised difference across samples. "
+             f"Full table: {path}", ""]
+    meaningful = df[((df.effect_unit == "log2 ratio") & (df.effect.abs() >= 0.5)) |
+                    ((df.effect_unit == "delta") & (df.effect.abs() >= 0.15))]
+    pan = meaningful[meaningful.pan_celltype]
+    if len(pan):
+        g = pan["feature"].str.split(": ", n=1).str[1]
+        summ = pan.assign(gene=g).groupby("gene").agg(n_celltypes=("source", "nunique"),
+                                                       mean_effect=("effect", "mean"))
+        lines += ["## ⚠ Pan-cell-type shifts (likely spillover / ambient, excluded from rankings below)", "",
+                  "These genes move the same way in most cell types. Find the cell type where they truly change "
+                  "(largest effect, highest expression) and check with gene_near before calling them regulated.", "",
+                  _md_table(summ.sort_values("n_celltypes", ascending=False).round(3)), ""]
+        meaningful = meaningful[~meaningful.pan_celltype]
+    lines += ["## Strongest separating features overall", "", _md_table(meaningful[shown].head(n_top).set_index("feature"))]
+    for kind in ("composition", "niche", "neighbourhood", "expression"):
+        sub = meaningful[meaningful.kind == kind]
+        if len(sub):
+            lines += ["", f"## {kind}", "", _md_table(sub[shown].head(n_top).set_index("feature"))]
+    return "\n".join(lines)
+
+
+def separability(s: Store, a: str, b: str, column: str | None = None, cells: dict | None = None,
+                 features: str = "expression") -> str:
+    from .analysis import separability as _sep
+    r = _sep(s, a, b, column, cells, features)
+    lines = [f"leave-one-sample-out logistic regression, {a} vs {b}, cells {cells or 'all'}, features={features}",
+             f"held-out AUC = {r['auc']:.3f} on {r['n_cells']:,} cells (0.5 = indistinguishable)", "",
+             "mean predicted P(a) per held-out sample:", "", _md_table(r["per_sample"].set_index("sample").round(3)), "",
+             f"features pushing towards {a}: " + ", ".join(f"{k} ({v:+.2f})" for k, v in r[f'higher_in_{a}'].items()),
+             f"features pushing towards {b}: " + ", ".join(f"{k} ({v:+.2f})" for k, v in r[f'higher_in_{b}'].items())]
+    return "\n".join(lines)
+
+
+def ligand_receptor(s: Store, sender: str | None = None, receiver: str | None = None, a: str | None = None,
+                    b: str | None = None, column: str | None = None, n_top: int = 30) -> str:
+    from .analysis import ligand_receptor as _lr
+    df = _lr(s, sender, receiver, a, b, column, n_top=n_top)
+    if df.empty:
+        return "no ligand-receptor pairs with both partners on the panel and expressed"
+    hdr = ("OmniPath ligand-receptor pairs on the panel. score = mean ligand (sender) x mean receptor (receiver). "
+           "colocalisation_log2_oe = how much the sender and receiver types neighbour each other (>0 = adjacent). "
+           "Expression-based inference: a hypothesis, not evidence of signalling.")
+    return hdr + "\n\n" + _md_table(df.round(4), max_rows=n_top)

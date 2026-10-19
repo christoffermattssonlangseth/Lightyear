@@ -49,6 +49,7 @@ class Schema:
     spatial_key: str | None
     x_encoding: str
     graphs: dict
+    structures: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -161,6 +162,7 @@ def inspect_h5ad(path, overrides: dict | None = None) -> tuple[Schema, pd.DataFr
             x_encoding = x_encoding.decode()
         col_desc, graph_desc = _uns_descriptions(f)
         graphs = {k: graph_desc.get(k, "") for k in (f["obsp"].keys() if "obsp" in f else [])}
+        structures = {k: list(f[k].keys()) for k in ("obsm", "layers", "uns") if k in f}
 
     obs = read_obs(path)
     col_desc.update(overrides.get("descriptions", {}))
@@ -184,6 +186,6 @@ def inspect_h5ad(path, overrides: dict | None = None) -> tuple[Schema, pd.DataFr
 
     schema = Schema(
         n_cells=len(obs), n_genes=len(genes), genes=genes, columns=columns, roles=roles,
-        spatial_key=spatial_key, x_encoding=x_encoding, graphs=graphs,
+        spatial_key=spatial_key, x_encoding=x_encoding, graphs=graphs, structures=structures,
     )
     return schema, obs

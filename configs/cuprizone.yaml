@@ -32,3 +32,4 @@ caveats:
   - Each experiment (no_recovery / recovery / infusion) is its own batch and panel version; only compare treatment vs its own control, never across experiments.
   - Recovery groups have only 2 sections each - per-sample spread matters more than p-values.
   - Spatial coordinates are in µm; sections are separate tissue pieces (neighbours never cross sections).
+organism: mouse

@@ -112,15 +112,23 @@ class Store:
         self._gene_lower = {g.lower(): g for g in self.genes}
         self.roles: dict = s["roles"]
         self.columns: dict = s["columns"]
+        self.columns.update(self.meta.get("derived", {}))
         self._obs = None
         self._xy = None
         self._expr = None
+        self._knn = None
 
     # -- lazy data ---------------------------------------------------------
     @property
     def obs(self) -> pd.DataFrame:
         if self._obs is None:
-            self._obs = pd.read_parquet(self.path / "obs.parquet")
+            obs = pd.read_parquet(self.path / "obs.parquet")
+            d = self.path / "derived.parquet"
+            if d.exists():
+                der = pd.read_parquet(d)
+                der.index = obs.index
+                obs = pd.concat([obs.drop(columns=[c for c in der.columns if c in obs.columns]), der], axis=1)
+            self._obs = obs
         return self._obs
 
     @property
@@ -136,6 +144,15 @@ class Store:
         return self._expr
 
     @property
+    def knn(self) -> tuple[np.ndarray, np.ndarray]:
+        """(indices, distances) of each cell's spatial nearest neighbours within its section, nearest first
+        (self excluded). Built at ingest; see spatial.ensure_knn."""
+        if self._knn is None:
+            self._knn = (np.load(self.path / "knn_idx.npy", mmap_mode="r"),
+                         np.load(self.path / "knn_dist.npy", mmap_mode="r"))
+        return self._knn
+
+    @property
     def n_cells(self) -> int:
         return self.meta["schema"]["n_cells"]
 
@@ -146,8 +163,43 @@ class Store:
         return d
 
     # -- helpers -----------------------------------------------------------
+    def save_meta(self):
+        (self.path / "meta.json").write_text(json.dumps(self.meta, indent=1, default=str))
+
+    def add_column(self, name: str, values, description: str, role: str = "derived", overwrite: bool = True):
+        """Persist a new per-cell column (niche labels, gates, scores, distances) so all tools can use it."""
+        if name in self.meta["schema"]["columns"]:
+            raise ValueError(f"{name!r} is an original column; pick another name")
+        if name in self.obs.columns and not overwrite:
+            raise ValueError(f"{name!r} exists")
+        values = pd.Series(np.asarray(values), index=self.obs.index, name=name)
+        if values.dtype == object:
+            values = values.astype("category")
+        d = self.path / "derived.parquet"
+        der = pd.read_parquet(d) if d.exists() else pd.DataFrame(index=np.arange(self.n_cells))
+        der.index = np.arange(self.n_cells)
+        der[name] = values.to_numpy() if not isinstance(values.dtype, pd.CategoricalDtype) else values.values
+        der.to_parquet(d)
+        n_unique = int(values.nunique())
+        info = {"name": name, "dtype": str(values.dtype), "n_unique": n_unique, "role": role, "level": "cell",
+                "description": description, "top_values": [], "numeric_summary": {}}
+        if n_unique <= 50 or not pd.api.types.is_float_dtype(values):
+            info["top_values"] = [[str(k), int(v)] for k, v in values.astype(str).value_counts().head(40).items()]
+        self.meta.setdefault("derived", {})[name] = info
+        self.columns[name] = info
+        self.save_meta()
+        self._obs = None
+        return info
+
+    def is_numeric_column(self, name: str) -> bool:
+        return name in self.obs.columns and pd.api.types.is_numeric_dtype(self.obs[name]) \
+            and self.obs[name].dtype != bool
+
     def resolve_gene(self, g: str) -> str:
+        """Gene symbol (case-insensitive) or a numeric obs column such as a gene-set score."""
         if g in self.gene_index:
+            return g
+        if self.is_numeric_column(g):
             return g
         hit = self._gene_lower.get(g.lower())
         if hit is None:
@@ -156,20 +208,35 @@ class Store:
         return hit
 
     def gene(self, g: str, mask: np.ndarray | None = None) -> np.ndarray:
-        v = np.asarray(self.expr[self.gene_index[self.resolve_gene(g)]], dtype=np.float32)
+        g = self.resolve_gene(g)
+        if g in self.gene_index:
+            v = np.asarray(self.expr[self.gene_index[g]], dtype=np.float32)
+        else:
+            v = self.obs[g].to_numpy(np.float32)
         return v if mask is None else v[mask]
 
     def role(self, r: str) -> str | None:
         return self.roles.get(r)
 
     def mask(self, filters: dict | None) -> np.ndarray:
-        """filters: {column: value | [values]} ; numeric columns accept {">": x, "<": y}."""
+        """filters: {column: value | [values]}; {column: {"not": [values]}} excludes;
+        numeric columns and genes accept {">": x, "<=": y}, e.g. {"Spp1": {">": 1}}."""
         m = np.ones(self.n_cells, dtype=bool)
         for col, val in (filters or {}).items():
             if col not in self.obs.columns:
-                raise KeyError(f"unknown column {col!r}")
+                try:
+                    v = self.gene(col)
+                except KeyError:
+                    raise KeyError(f"unknown column or gene {col!r}") from None
+                if not isinstance(val, dict):
+                    raise ValueError(f"gene filter {col!r} needs a comparison, e.g. {{'>': 0}}")
+                for op, x in val.items():
+                    m &= {">": v > x, ">=": v >= x, "<": v < x, "<=": v <= x}[op]
+                continue
             s = self.obs[col]
-            if isinstance(val, dict):
+            if isinstance(val, dict) and "not" in val:
+                m &= ~self.mask({col: val["not"]})
+            elif isinstance(val, dict):
                 v = s.to_numpy(float)
                 for op, x in val.items():
                     m &= {">": v > x, ">=": v >= x, "<": v < x, "<=": v <= x}[op]
