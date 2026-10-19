@@ -1,0 +1,34 @@
+# Dataset config: everything here is optional; it overrides/extends what ingest infers.
+name: cuprizone_xenium
+description: |
+  GSE266690 (Willis et al., Cell Reports 2025): Xenium of adult mouse forebrain (corpus callosum,
+  V-SVZ, striatum, cortex) in three experiments. (1) no_recovery: 6 wk cuprizone + rapamycin
+  demyelination vs control (2024 batch, panel v1.7). (2) recovery: 6 wk cuprizone-rapamycin + 3 wk
+  recovery vs control (2023 batch, panel v1.4). (3) infusion: 7 d intracerebroventricular OSM vs BSA
+  in healthy mice (2024 batch). 19 sections, ~2.36 M QC-passed cells, 307 genes shared across panels
+  (the h5ad keeps the shared set). Processed in ~/work/karolinska_institutet/projects/cupriZONE.
+expr_description: log-normalised (normalize_total target 100, log1p)
+
+roles:
+  sample: sample_id
+  cell_type: cell_type
+  group: group
+
+descriptions:
+  sample_id: section/sample name = group + replicate number
+  gsm: GEO sample accession (1:1 with sample_id)
+  condition: "Cntl / CupRap / BSA / OSM - do NOT use for contrasts (CupRap spans two timepoints and batches); use group"
+  cell_type_cluster: Leiden cluster with its assigned cell type
+  oligo_subcluster: per-batch subclusters of oligodendroglia; acute_* and recovery_* are not comparable across batches
+
+niche_columns: [niche_cc, niche, vsvz_niche, striatum_niche, striatum_part]
+
+contrasts:
+  - {column: group, a: NoRecov_CupRap, b: NoRecov_Cntl}
+  - {column: group, a: Recov_CupRap, b: Recov_Cntl}
+  - {column: group, a: Inf_OSM, b: Inf_BSA}
+
+caveats:
+  - Each experiment (no_recovery / recovery / infusion) is its own batch and panel version; only compare treatment vs its own control, never across experiments.
+  - Recovery groups have only 2 sections each - per-sample spread matters more than p-values.
+  - Spatial coordinates are in µm; sections are separate tissue pieces (neighbours never cross sections).

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spaceagent"
+version = "0.1.0"
+description = "Ingest a spatial omics dataset into a queryable store + dataset card, and expose it to an LLM agent via MCP"
+requires-python = ">=3.10"
+dependencies = [
+  "anndata>=0.10",
+  "h5py",
+  "numpy",
+  "pandas",
+  "pyarrow",
+  "scipy",
+  "matplotlib",
+  "pyyaml",
+  "mcp>=2.2",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+spaceagent = "spaceagent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
