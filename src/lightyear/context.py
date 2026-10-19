@@ -144,7 +144,10 @@ def fit(s: Store, name: str, groups: list[str] | None = None, cell_types: list[s
     asked = [s.resolve_gene(g) for g in (genes or [])]
     pool = s.genes if len(s.genes) <= max_genes else _variable_genes(s, in_train, max_genes)
     genes = [g for g in dict.fromkeys(pool + asked) if g not in gaps]
-    types = cell_types or [c for c, n in pd.Series(ct_arr[in_train]).value_counts().items() if n >= MIN_CELLS]
+    from .claims import reference_types  # no doublet classes
+    ref = reference_types(s)
+    types = cell_types or [c for c, n in pd.Series(ct_arr[in_train]).value_counts().items()
+                           if n >= MIN_CELLS and c in ref]
     # subsample per (cell type, sample), then read every gene row once for all cell types
     picks = {}
     for ct in types:
@@ -412,8 +415,12 @@ def drivers(s: Store, name: str, cell_type: str, genes: list[str], cells: dict |
     genes = m.gene_cols(genes)
     comps, cats = _comps(s, idx)
     base = m.predict(idx, genes, comps)
+    from .claims import reference_types
+    ref = reference_types(s)
     rows = []
     for c in cats:
+        if c not in ref:  # doublet / tiny classes are not meaningful neighbours to remove
+            continue
         cf = counterfactual(comps, cats, remove=[c])
         has = (comps[0][:, cats.index(c)] > 0) | (comps[1][:, cats.index(c)] > 0)
         ok = has & ~np.isnan(np.hstack(cf)).any(1)
