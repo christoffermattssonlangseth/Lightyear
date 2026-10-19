@@ -117,15 +117,16 @@ class CardBuilder:
                 break
         self.save("samples", df)
         self.sections["samples"] = "## Samples\n\n" + _md_table(df)
-        # nested covariates: e.g. every group lives in exactly one batch
-        for a in sample_cols:
-            for b in sample_cols:
-                if a >= b:
-                    continue
-                pairs = df[[a, b]].drop_duplicates()
-                if len(pairs) == df[a].nunique() and df[b].nunique() > 1 and df[a].nunique() > df[b].nunique():
-                    self.caveats.append(f"`{a}` is nested in `{b}` (each {a} occurs in only one {b}); "
-                                        f"comparisons across different `{b}` values are confounded by it.")
+        # nested covariates: e.g. every group lives in exactly one batch (skip per-sample identifiers)
+        n_samp = len(df)
+        coarse = [c for c in sample_cols if 1 < df[c].nunique() < n_samp]
+        for a in coarse:
+            outer = [b for b in coarse if b != a and df[b].nunique() < df[a].nunique()
+                     and len(df[[a, b]].drop_duplicates()) == df[a].nunique()]
+            if outer:
+                self.caveats.append(f"`{a}` is nested in {', '.join(f'`{b}`' for b in outer)} (each {a} value occurs "
+                                    f"in only one of each); differences between {a} values from different "
+                                    f"{'/'.join(outer)} are confounded with them.")
 
     def cell_types(self):
         if not self.ct:
@@ -300,8 +301,29 @@ class CardBuilder:
             full = pd.concat(allres)
             full.index.name = "gene"
             full.reset_index().to_parquet(self.tables / "contrasts.parquet")
+            lines += self._global_shifts(full)
         self.sections["contrasts"] = "\n".join(lines)
         self.log(f"  contrasts {time.time() - t0:.0f}s")
+
+    def _global_shifts(self, full: pd.DataFrame, min_delta: float = 0.2, min_share: float = 0.75) -> list[str]:
+        """Genes shifting the same way in most cell types: usually spillover/ambient RNA from a strongly
+        changed cell population (or tissue-wide composition), not regulation in each cell type."""
+        out = []
+        for con, sub in full.reset_index().groupby("contrast"):
+            n_ct = sub["cell_type"].nunique()
+            if n_ct < 4:
+                continue
+            for sign, word in ((1, "up"), (-1, "down")):
+                hit = sub[sign * sub["delta"] >= min_delta].groupby("gene")["cell_type"].nunique()
+                hit = hit[hit >= min_share * n_ct].sort_values(ascending=False)
+                if len(hit):
+                    genes = ", ".join(f"{g} ({k}/{n_ct})" for g, k in hit.items())
+                    msg = (f"{con}: {genes} {word} by ≥{min_delta} in most cell types - likely spillover / ambient "
+                           "signal from the cells that really change (check `gene_near` and the source cell type) "
+                           "rather than regulation in every cell type.")
+                    out.append(f"- ⚠ {msg}")
+                    self.caveats.append(msg)
+        return [""] + out if out else []
 
     def finish(self):
         lines = ["## Caveats", ""] + [f"- {c}" for c in dict.fromkeys(self.caveats)] if self.caveats \

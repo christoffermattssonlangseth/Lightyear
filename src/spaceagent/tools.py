@@ -117,7 +117,7 @@ def compare_groups(s: Store, a: str, b: str, column: str | None = None, cell_typ
     gap = _panel_note(s, list(res.index[:n_top]))
     hdr = (f"{a} vs {b} on `{column}`; cells: {f or 'all'}; samples with ≥20 cells: "
            f"{res['n_a'].max()} vs {res['n_b'].max()}. delta = difference in mean log-normalised expression.")
-    return hdr + (f"\n{gap}" if gap else "") + "\n\n" + _md_table(res.head(n_top).round(4))
+    return hdr + (f"\n{gap}" if gap else "") + "\n\n" + _md_table(res.head(n_top).round({c: 4 for c in res.columns if c != "p"}))
 
 
 def neighbourhood(s: Store, centre: str | None = None, group: str | None = None, n_top: int = 30) -> str:

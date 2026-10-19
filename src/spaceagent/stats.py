@@ -5,6 +5,8 @@ returned, so tool outputs stay small and never expose cell-level values.
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 from scipy import stats as sps
@@ -113,7 +115,8 @@ def compare_samples(pb: pd.DataFrame, sample_groups: pd.Series, a: str, b: str,
     })
     res["delta"] = res[f"mean_{a}"] - res[f"mean_{b}"]
     if len(ga) >= 2 and len(gb) >= 2:
-        with np.errstate(all="ignore"):
+        with np.errstate(all="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
             t, p = sps.ttest_ind(ga, gb, equal_var=False, axis=0, nan_policy="omit")
         res["t"] = t
         res["p"] = p
