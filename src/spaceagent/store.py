@@ -118,6 +118,7 @@ class Store:
         self._xy = None
         self._expr = None
         self._knn = None
+        self._strcols: dict = {}
 
     # -- lazy data ---------------------------------------------------------
     @property
@@ -190,7 +191,21 @@ class Store:
         self.columns[name] = info
         self.save_meta()
         self._obs = None
+        self._strcols = {}
         return info
+
+    def strcol(self, name: str) -> np.ndarray:
+        """Column as a cached numpy array of str (fast repeated lookups of sample / group / cell type)."""
+        if name not in self._strcols:
+            c = self.obs[name]
+            if isinstance(c.dtype, pd.CategoricalDtype):
+                cats = np.asarray(c.cat.categories.astype(str), dtype=object)
+                codes = c.cat.codes.to_numpy()
+                v = np.where(codes >= 0, cats[np.maximum(codes, 0)], "nan")
+            else:
+                v = c.astype(str).to_numpy()
+            self._strcols[name] = v.astype(str)
+        return self._strcols[name]
 
     def is_numeric_column(self, name: str) -> bool:
         return name in self.obs.columns and pd.api.types.is_numeric_dtype(self.obs[name]) \

@@ -205,6 +205,12 @@ def describe_structures(s: Store) -> str:
     if der:
         lines.append("\nderived columns (created by tools, usable everywhere):")
         lines += [f"- `{n}` ({d['role']}): {d['description']}" for n, d in der.items()]
+    md = s.path / "models"
+    models = sorted(p.parent.name for p in md.glob("*/model.json")) if md.exists() else []
+    for name in models:
+        mm = json.loads((md / name / "model.json").read_text())
+        lines.append(f"context model `{name}`: trained on groups {mm['group_levels']} "
+                     f"({len(mm['samples'])} samples, {len(mm['types'])} cell types)")
     return "\n".join(lines)
 
 
@@ -406,9 +412,11 @@ def _claim_md(c: dict) -> str:
 def test_claim(s: Store, statement: str, kind: str, feature: str, a: str, b: str | None = None,
                cells: dict | None = None, direction: str = "up", column: str | None = None,
                group_column: str | None = None, k: int = 10, min_effect: float | None = None,
-               stratify: str | None = None, record: bool = True):
+               stratify: str | None = None, record: bool = True, model: str | None = None,
+               remove: list[str] | None = None, replace: dict | None = None):
     from . import claims, plots
-    spec = claims.make_spec(s, kind, feature, a, b, cells, direction, column, group_column, k, min_effect, stratify)
+    spec = claims.make_spec(s, kind, feature, a, b, cells, direction, column, group_column, k, min_effect, stratify,
+                            model, remove, replace)
     c = claims.test_claim(s, statement, spec, record=record)
     return _claim_md(c), plots.claim(s, c)
 
@@ -448,3 +456,85 @@ def recheck_claims(s: Store, ids: list[str] | None = None, force: bool = False) 
     df = pd.DataFrame(ch).set_index("id")
     df["changed"] = np.where(df["before"] != df["after"], "⚠", "")
     return _md_table(df[["changed", "before", "after", "note", "statement"]])
+
+
+# -- context model -------------------------------------------------------------------------
+def fit_context_model(s: Store, name: str, groups: list[str] | None = None, cell_types: list[str] | None = None,
+                      max_cells: int = 60000) -> str:
+    from . import context
+    perf = context.fit(s, name, groups, cell_types, max_cells=max_cells, log=lambda *_: None)
+    m = context.ContextModel(s, name)
+    p = perf[perf["mean"] >= 0.05]
+    summ = p.groupby("cell_type").agg(n_train=("n_train", "first"), median_r2_context=("r2_context", "median"),
+                                      genes_r2_context_over_0_1=("r2_context", lambda x: int((x >= 0.1).sum())))
+    top = p.sort_values("r2_context", ascending=False).groupby("cell_type").head(3)
+    summ["most_context_dependent"] = top.groupby("cell_type")["gene"].agg(", ".join)
+    return "\n".join([
+        f"# Context model `{name}`: neighbourhood composition (k={context.SCALES}) -> expression, per cell type",
+        f"Trained on {len(m.meta['samples'])} samples ({', '.join(m.meta['samples'])}), cross-fitted by sample "
+        f"({len(set(m.meta['fold_of'].values()))} folds): every number below is for animals the model never saw.",
+        "The condition is a covariate, so neighbourhood effects are learned within condition. r2_context = "
+        "held-out per-cell variance explained beyond a condition-only model (single-cell counts are noisy: "
+        "0.05-0.3 is substantial).", "",
+        _md_table(summ.sort_values("median_r2_context", ascending=False).round(3)), "",
+        "Next: context_genes(model, cell_type) to see which genes and which neighbours, and whether they are "
+        "spillover-like or state-like."])
+
+
+def context_genes(s: Store, name: str, cell_type: str, n_top: int = 15, genes: list[str] | None = None) -> str:
+    from . import context
+    t = context.atlas(s, name, cell_type, n_top, genes=genes)
+    return "\n".join([
+        f"# Neighbourhood-dependent genes in {cell_type} (model `{name}`, held-out)",
+        "raised_by = neighbour type whose in-silico removal lowers the gene most (removal_effect, log units); "
+        "raiser_minus_self = how much more that neighbour type expresses the gene. "
+        f"spillover-like (≥ {context.SPILL_LOG}): indistinguishable from transcripts picked up from that "
+        "neighbour (segmentation / diffusion). state-like: a context-dependent state of the cell itself.", "",
+        _md_table(t.round(3))])
+
+
+def perturb_neighbourhood(s: Store, name: str, cells: dict, genes: list[str], remove: list[str] | None = None,
+                          replace: dict | None = None, by: str | None = None) -> str:
+    from . import context
+    r = context.perturb(s, name, cells, genes, remove, replace)
+    by = by or s.role("group")
+    sg = _sample_groups(s, by)
+    dc = r["delta_in_changed_cells"].round(3)
+    act = r["actual"].round(3).add_prefix("predicted_")
+    tab = pd.concat([act, dc.add_prefix("delta_"), r["frac_cells_changed"].rename("frac_cells_changed").round(3)],
+                    axis=1)
+    tab[by] = sg.reindex(tab.index)
+    edit = " and ".join(([f"remove {', '.join(remove)}"] if remove else []) +
+                        [f"replace {k} -> {v}" for k, v in (replace or {}).items()])
+    warn = "" if r["support"] >= 0.8 else (
+        f"\n⚠ Only {r['support']:.0%} of the edited neighbourhoods resemble any neighbourhood in the training "
+        "data: the model is extrapolating; treat the deltas as unreliable.")
+    return "\n".join([
+        f"# In-silico edit: {edit}, for {cells} (model `{name}`)",
+        "delta = mean change in predicted log-expression in the cells whose neighbourhood the edit changes "
+        "(cross-fitted: each animal predicted by a model that never saw it). Associational, not causal.",
+        f"Edited neighbourhoods within training support: {r['support']:.0%} "
+        f"(actual neighbourhoods: {r['support_actual']:.0%}).{warn}", "",
+        _md_table(tab.sort_values(by)), "", "Mean by group:", "",
+        _md_table(tab.groupby(by).mean(numeric_only=True).round(3))])
+
+
+def explain_difference(s: Store, name: str, a: str, b: str, cells: dict, genes: list[str] | None = None,
+                       n_top: int = 20) -> str:
+    from . import context
+    t = context.explain(s, name, a, b, cells, genes)
+    if not genes:
+        t = t[t["observed_delta"].abs() >= 0.1].head(n_top)
+    t = t.copy()
+    ct = context.ContextModel(s, name).single_type(np.flatnonzero(s.mask(cells)))
+    at = context.atlas(s, name, ct, genes=list(t.index), min_mean=0)
+    t["raised_by"], t["lowered_by"], t["label"] = at["raised_by"], at["lowered_by"], at["label"]
+    t["note"] = np.where(t["model_r2_context"] < 0.02, "model barely fits this gene: split unreliable",
+                         np.where(t["label"] == "spillover-like", "neighbourhood part may be spillover", ""))
+    return "\n".join([
+        f"# How much of {a} vs {b} in {cells} does the neighbourhood alone predict? (model `{name}`)",
+        "observed_delta = difference of per-sample means, split (cross-fitted) into neighbourhood_part (the "
+        "cells' different surroundings, condition held fixed), condition_part (same surroundings, condition "
+        "switched) and residual. A large neighbourhood_part: the change goes with who surrounds the cells "
+        "(e.g. lesion), not with every cell of the condition. Associational, not causal.", "",
+        _md_table(t.round(3))])

@@ -36,6 +36,31 @@ On cupriZONE (acute CupRap vs control, 3 v 3) *Spp1*, *Cybb* up and *Tmem119* do
 `robust`. *Mbp* down in microglia and *Gfap* up in oligodendrocytes, both known spillover artefacts,
 come out `fragile`: the ambient signature is found from the data, with no gene list.
 
+## A learned model of the tissue: what if the neighbours were different?
+
+`fit_context_model` learns, per cell type, how a cell's expression depends on who surrounds it: ridge
+regression of all panel genes on the cell-type composition of its 10 and 30 nearest neighbours (fractions and
+square roots), local density and condition. It is **cross-fitted by animal**: every reported number and every
+prediction comes from a model that never saw that animal. With condition as a covariate, the neighbourhood
+effects are learned within condition, so the neighbourhood is not used as a proxy for "this is a lesioned mouse".
+
+| tool | answers |
+|---|---|
+| `context_genes` | which genes of a cell type depend on the neighbourhood (`r2_context` = held-out variance explained beyond condition), which neighbour raises/lowers each, and whether that is **spillover-like** (the neighbour expresses the gene far more: picked-up transcripts) or **state-like** |
+| `explain_difference` | splits a case–control change into a *neighbourhood part* (different surroundings), a *condition part* (same surroundings, condition switched) and a residual |
+| `perturb_neighbourhood` | in-silico edit (remove neighbour types, replace one with another), predicted change per animal, with a **support check**: are the edited neighbourhoods like anything seen in training? |
+
+Model results enter the claims ledger as `kind="context"` / `kind="perturbation"`, with extra tests for held-out
+model fit, support and spillover. Phrase them as associations, not causes.
+
+On cupriZONE (acute CupRap vs control, 6 animals, fit in ~40 s):
+- In microglia, 86% of the *Fn1* increase and 60% of the *Spp1* increase go with the cells' surroundings
+  (other microglia: lesion clusters).
+- *Cd68* (30%) and *Tmem119* (42%) shift mostly with condition across all microglia.
+- The top "context genes" of most cell types are neighbours' markers (*Ppp1r1b* from MSNs, *Slc17a7* from
+  excitatory neurons, *Mbp* from oligodendrocytes), correctly labelled spillover-like.
+- "Remove all microglial neighbours" is flagged as extrapolation (60% support).
+
 ## Ingest a dataset
 
 ```bash
@@ -57,7 +82,7 @@ samples), niche composition, kNN co-localisation per group, per-cell-type condit
 ## Query it
 
 Point `.mcp.json` at the store and start Claude Code in this folder. The `query-dataset` skill
-runs a Plan → Act → Conclude → Verify loop over 33 tools:
+runs a Plan → Act → Conclude → Verify loop over 37 tools:
 
 | Area | Tools |
 |---|---|
@@ -67,6 +92,7 @@ runs a Plan → Act → Conclude → Verify loop over 33 tools:
 | Spatial neighbours | `neighbourhood_of`, `neighbourhood`, `nhood_enrichment` (permutation z), `co_occurrence` (vs distance), `distance`, `gene_near`, `gradient`, `spatial_autocorrelation` (Moran's I), `plot_spatial` |
 | Niches | `compute_niches` (cell-type composition, or UTAG-like neighbour-smoothed expression), `composition` |
 | Case vs control | `case_control` (composition, niches, neighbourhoods and expression ranked by sample-level effect size, with pan-cell-type spillover flagged), `separability` (leave-one-sample-out classifier), `ligand_receptor` (OmniPath, co-localisation-annotated) |
+| Context model | `fit_context_model`, `context_genes`, `explain_difference`, `perturb_neighbourhood` |
 | Claims ledger | `test_claim`, `list_claims`, `show_claim`, `recheck_claims` |
 | Free analysis | `run_python`: saved, numbered scripts in `<store>/analyses/` that return stdout and figures |
 
@@ -82,10 +108,12 @@ s = load("stores/cuprizone")
 print(tools.compare_groups(s, "NoRecov_CupRap", "NoRecov_Cntl", cell_type="Microglia"))
 ```
 
-## Limits (v0.3)
+## Limits (v0.4)
 
 - Dense gene-major store, which suits targeted panels (Xenium/MERSCOPE/CosMx). Whole-transcriptome data needs a sparse backend.
 - Expression is assumed to be log-normalised. Use `--layer` to choose another layer.
 - One store per server process.
+- The context model is linear in composition features (with square-root terms). It sees cell-type composition,
+  not neighbours' expression states, and it is associational.
 - External knowledge (marker DBs, OmniPath ligand-receptor) is downloaded on first use to `~/.cache/spaceagent`.
 - `run_python` runs arbitrary code locally; nothing enforces aggregate-only output. Keep that in mind for human data.

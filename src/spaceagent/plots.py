@@ -124,12 +124,13 @@ def claim(s: Store, c: dict):
             ax.annotate(smp, (xi, yi), fontsize=5, xytext=(4, 0), textcoords="offset points", va="center")
         if len(d):
             ax.hlines(d["v"].mean(), i - 0.25, i + 0.25, color="k", lw=1)
-    if sp["b"] is None:
+    if sp["b"] is None or sp["kind"] == "perturbation":
         ax.axhline(0, color="grey", lw=0.6, ls="--")
     ax.set_xticks(range(len(order)), order, fontsize=8)
     ax.set_xlim(-0.6, len(order) - 0.4)
     unit = {"expression": "mean log-expression", "composition": "log2 share",
-            "colocalisation": "log2 O/E"}[sp["kind"]]
+            "colocalisation": "log2 O/E", "context": "predicted log-expression (context only)",
+            "perturbation": "predicted change (log)"}[sp["kind"]]
     ax.set_ylabel(unit, fontsize=8)
     ax.set_title(f"{c['id'] or 'unrecorded'}: {h['verdict'].upper()}\n{c['statement'][:70]}", fontsize=8)
     p = _out(s, f"claim_{c['id'] or 'tmp'}")

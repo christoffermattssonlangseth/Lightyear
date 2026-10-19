@@ -14,6 +14,8 @@ dependencies = [
   "pandas",
   "pyarrow",
   "scipy",
+  "scikit-learn",
+  "threadpoolctl",
   "matplotlib",
   "pyyaml",
   "mcp>=2.2",

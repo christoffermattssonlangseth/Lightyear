@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import scipy.sparse as sp
+from scipy.spatial import cKDTree
 
 from spaceagent import ingest
 
@@ -10,10 +11,10 @@ from spaceagent import ingest
 @pytest.fixture(scope="module")
 def toy(tmp_path_factory):
     """4 sections, 2 groups. Planted: GeneDE up in 'treat' T cells; A and B cells cluster together;
-    GeneGap unmeasured in s4."""
+    GeneGap unmeasured in s4; GeneCtx in A cells rises with the share of T among their 10 nearest neighbours."""
     rng = np.random.default_rng(0)
     rows, obs, xy = [], [], []
-    genes = ["MarkA", "MarkB", "MarkT", "GeneDE", "GeneGap", "Noise"]
+    genes = ["MarkA", "MarkB", "MarkT", "GeneDE", "GeneGap", "Noise", "GeneCtx"]
     for si, (smp, grp) in enumerate([("s1", "ctrl"), ("s2", "ctrl"), ("s3", "treat"), ("s4", "treat")]):
         n = 1500
         # A and B in the left half, T in the right half
@@ -29,6 +30,9 @@ def toy(tmp_path_factory):
             X[ct == "T", 3] += 4
         if smp == "s4":
             X[:, 4] = 0
+        _, nb = cKDTree(np.c_[x, y]).query(np.c_[x, y], k=11)
+        frac_t = (ct[nb[:, 1:]] == "T").mean(1)
+        X[:, 6] = rng.poisson(0.2, n) + np.where(ct == "A", rng.poisson(8 * frac_t), 0)
         rows.append(np.log1p(X))
         obs.append(pd.DataFrame({"sample_id": smp, "group": grp, "cell_type": ct,
                                  "total_counts": X.sum(1)}))

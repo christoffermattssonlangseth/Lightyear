@@ -5,6 +5,7 @@ subprocess (time-limited), and returns stdout (truncated) plus any figures it pr
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -45,7 +46,7 @@ def run_python(s: Store, code: str, title: str = "analysis", timeout: int = 900,
     t0 = time.time()
     try:
         r = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=timeout,
-                           cwd=out)
+                           cwd=out, env={"OPENBLAS_NUM_THREADS": "4", **os.environ})
         text, ok = r.stdout + (("\n[stderr]\n" + r.stderr[-4000:]) if r.returncode else ""), r.returncode == 0
     except subprocess.TimeoutExpired as e:
         text, ok = (e.stdout or "") + f"\n[timed out after {timeout}s]", False

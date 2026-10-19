@@ -256,24 +256,62 @@ def run_python(code: str, title: str = "analysis") -> list:
     return [text] + [Image(path=p) for p in figs[:4]]
 
 
+# -- context model ----------------------------------------------------------------------
+@mcp.tool()
+def fit_context_model(name: str, groups: list[str] | None = None, cell_types: list[str] | None = None,
+                      max_cells: int = 60000) -> str:
+    """Learn, per cell type, how a cell's expression depends on its neighbourhood (cell-type composition of
+    its 10 and 30 nearest neighbours). Cross-fitted by sample, so performance and every later prediction are
+    for unseen animals. Fit one model per experiment (groups = the groups of one batch). Takes 1-3 min."""
+    return tools.fit_context_model(S(), name, groups, cell_types, max_cells)
+
+
+@mcp.tool()
+def context_genes(name: str, cell_type: str, n_top: int = 15, genes: list[str] | None = None) -> str:
+    """Genes of a cell type whose expression the neighbourhood predicts best, which neighbour type raises or
+    lowers each, and whether that looks like spillover (neighbour's transcripts) or a context-dependent state."""
+    return tools.context_genes(S(), name, cell_type, n_top, genes)
+
+
+@mcp.tool()
+def perturb_neighbourhood(name: str, cells: dict[str, Any], genes: list[str], remove: list[str] | None = None,
+                          replace: dict[str, str] | None = None, by: str | None = None) -> str:
+    """In-silico experiment: edit the neighbourhoods of `cells` (one cell type) - remove neighbour types or
+    replace one type by another - and predict the change in `genes`, per sample. Reports whether the edited
+    neighbourhoods are within what the model was trained on."""
+    return tools.perturb_neighbourhood(S(), name, cells, genes, remove, replace, by)
+
+
+@mcp.tool()
+def explain_difference(name: str, a: str, b: str, cells: dict[str, Any], genes: list[str] | None = None) -> str:
+    """Split an a-vs-b expression difference in one cell type into the part predicted by neighbourhood
+    composition alone and the remainder (intrinsic / not captured)."""
+    return tools.explain_difference(S(), name, a, b, cells, genes)
+
+
 # -- claims ledger ---------------------------------------------------------------------
 @mcp.tool(structured_output=False)
 def test_claim(statement: str, kind: str, feature: str, a: str, b: str | None = None,
                cells: dict[str, Any] | None = None, direction: str = "up", column: str | None = None,
                group_column: str | None = None, k: int = 10, min_effect: float | None = None,
-               stratify: str | None = None, record: bool = True) -> list:
+               stratify: str | None = None, record: bool = True, model: str | None = None,
+               remove: list[str] | None = None, replace: dict[str, str] | None = None) -> list:
     """Try to break a claim before stating it, and record the verdict in the dataset's claims ledger.
 
     kind: 'expression' (feature = gene/score, in `cells`), 'composition' (feature = a value of `column`,
     share among `cells`) or 'colocalisation' (feature = a value of `column`, among the k nearest neighbours
-    of `cells`, log2 O/E; b=None tests against expected). direction: 'up'/'down' = a relative to b.
+    of `cells`, log2 O/E; b=None tests against expected), 'context' (feature = gene; its prediction from
+    neighbourhood alone by context model `model`, a vs b) or 'perturbation' (feature = gene; predicted change
+    when neighbours are edited with remove/replace, b=None tests against no change).
+    direction: 'up'/'down' = a relative to b.
     Reduces to one value per sample, then runs: direction/size, replicates, sample separation, leave-one-
     sample-out, exact label permutation, and for expression spillover from the main neighbouring source
-    cell type, niche stratification, identity-marker confidence and specificity.
+    cell type, niche stratification, identity-marker confidence and specificity; for model kinds held-out
+    model fit, training support of edited neighbourhoods, and whether the driver is spillover.
     Verdict: robust / fragile / underpowered / not_supported / refuted. Returns the report and a
     per-sample figure. Re-testing an identical spec appends to that claim's history."""
     text, fig = tools.test_claim(S(), statement, kind, feature, a, b, cells, direction, column, group_column,
-                                 k, min_effect, stratify, record)
+                                 k, min_effect, stratify, record, model, remove, replace)
     return [text, Image(path=fig)]
 
 

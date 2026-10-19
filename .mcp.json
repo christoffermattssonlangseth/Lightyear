@@ -2,9 +2,13 @@
   "mcpServers": {
     "spaceagent": {
       "command": "/Users/chrislangseth/miniforge3/bin/python",
-      "args": ["-m", "spaceagent.server"],
+      "args": [
+        "-m",
+        "spaceagent.server"
+      ],
       "env": {
-        "SPACEAGENT_STORE": "/Users/chrislangseth/work/karolinska_institutet/projects/SpaceAgent/stores/cuprizone"
+        "SPACEAGENT_STORE": "/Users/chrislangseth/work/karolinska_institutet/projects/SpaceAgent/stores/cuprizone",
+        "OPENBLAS_NUM_THREADS": "4"
       }
     }
   }

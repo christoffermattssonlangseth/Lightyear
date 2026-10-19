@@ -30,26 +30,41 @@ import pandas as pd
 from . import spatial, stats
 from .store import Store
 
-KINDS = ("expression", "composition", "colocalisation")
-MIN_EFFECT = {"expression": 0.1, "composition": 0.5, "colocalisation": 0.5}
+KINDS = ("expression", "composition", "colocalisation", "context", "perturbation")
+MODEL_KINDS = ("context", "perturbation")
+MIN_EFFECT = {"expression": 0.1, "composition": 0.5, "colocalisation": 0.5, "context": 0.1, "perturbation": 0.1}
 MIN_CELLS = 20
 CORE = ("direction", "replicates", "separation", "leave_one_out", "permutation", "spillover", "niche",
-        "confident")  # specificity is core only when the population is not the main expresser
+        "confident", "model_fit", "support", "not_spillover")  # specificity is core only when the population is not the main expresser
 
 
 # -- spec -----------------------------------------------------------------------
 def make_spec(s: Store, kind: str, feature: str, a: str, b: str | None = None, cells: dict | None = None,
               direction: str = "up", column: str | None = None, group_column: str | None = None,
-              k: int = 10, min_effect: float | None = None, stratify: str | None = None) -> dict:
+              k: int = 10, min_effect: float | None = None, stratify: str | None = None,
+              model: str | None = None, remove: list[str] | None = None, replace: dict | None = None) -> dict:
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {KINDS}")
     if direction not in ("up", "down"):
         raise ValueError("direction must be 'up' or 'down' (a relative to b, or relative to expected)")
     group_column = group_column or s.role("group")
     column = column or s.role("cell_type")
-    if b is None and kind != "colocalisation":
-        raise ValueError("a one-group claim (b=None) is only meaningful for colocalisation (vs expected)")
-    if kind == "expression":
+    if b is None and kind not in ("colocalisation", "perturbation"):
+        raise ValueError("a one-group claim (b=None) is only meaningful for colocalisation (vs expected) "
+                         "and perturbation (vs no change)")
+    extra = {}
+    if kind in MODEL_KINDS:
+        from .context import ContextModel
+        if not model:
+            raise ValueError(f"kind {kind!r} needs model= (a fitted context model)")
+        cm = ContextModel(s, model)
+        cm.single_type(cm.cells_of(cells))
+        feature = cm.gene_cols([feature])[0]
+        if kind == "perturbation" and not (remove or replace):
+            raise ValueError("perturbation needs remove=[...] and/or replace={from: to}")
+        extra = {"model": model} if kind == "context" else {"model": model, "remove": remove or [],
+                                                              "replace": replace or {}}
+    elif kind == "expression":
         feature = s.resolve_gene(feature)
     elif feature not in set(s.obs[column].astype(str).unique()):
         raise ValueError(f"{feature!r} is not a value of {column!r}")
@@ -61,7 +76,7 @@ def make_spec(s: Store, kind: str, feature: str, a: str, b: str | None = None, c
     return {"kind": kind, "feature": feature, "a": a, "b": b, "cells": cells or {}, "direction": direction,
             "column": column, "group_column": group_column, "k": int(k),
             "min_effect": float(min_effect if min_effect is not None else MIN_EFFECT[kind]),
-            "stratify": stratify}
+            "stratify": stratify, **extra}
 
 
 def describe(spec: dict) -> str:
@@ -70,7 +85,13 @@ def describe(spec: dict) -> str:
     ref = spec["b"] if spec["b"] is not None else "expected"
     what = {"expression": f"{spec['feature']} expression in [{cells}]",
             "composition": f"share of {spec['feature']} among [{cells}]",
-            "colocalisation": f"{spec['feature']} among the {spec['k']} nearest neighbours of [{cells}] (log2 O/E)"}
+            "colocalisation": f"{spec['feature']} among the {spec['k']} nearest neighbours of [{cells}] (log2 O/E)",
+            "context": f"{spec['feature']} in [{cells}] as predicted from neighbourhood alone, condition held at "
+                       f"{spec['b']} (model {spec.get('model')})",
+            "perturbation": f"change in predicted {spec['feature']} in [{cells}] when neighbours are edited "
+                            f"(remove {spec.get('remove')}, replace {spec.get('replace')}; model {spec.get('model')})"}
+    if spec["kind"] == "perturbation" and spec["b"] is None:
+        return f"{what['perturbation']} is {'positive' if spec['direction'] == 'up' else 'negative'} in {spec['a']}"
     return f"{what[spec['kind']]} is {arrow} in {spec['a']} than in {ref}"
 
 
@@ -81,7 +102,9 @@ def _sample_codes(s: Store):
 
 def per_sample(s: Store, spec: dict, extra: np.ndarray | None = None) -> pd.Series:
     """One value per sample (NaN where too few cells / gene not on that sample's panel).
-    expression: mean log-expression; composition: log2 share; colocalisation: log2 O/E."""
+    expression: mean log-expression; composition: log2 share; colocalisation: log2 O/E;
+    context: mean predicted log-expression from neighbourhood alone; perturbation: mean predicted change
+    in the cells whose neighbourhood the edit changes."""
     codes, samples = _sample_codes(s)
     groups = [spec["a"]] + ([spec["b"]] if spec["b"] is not None else [])
     m = s.mask(spec["cells"]) & s.mask({spec["group_column"]: groups})
@@ -90,7 +113,9 @@ def per_sample(s: Store, spec: dict, extra: np.ndarray | None = None) -> pd.Seri
     S = len(samples)
     n = np.bincount(codes[m], minlength=S).astype(float)
     with np.errstate(all="ignore"):
-        if spec["kind"] == "expression":
+        if spec["kind"] in MODEL_KINDS:
+            val, n = _model_per_sample(s, spec, m, codes, S)
+        elif spec["kind"] == "expression":
             v = np.bincount(codes[m], weights=s.gene(spec["feature"])[m], minlength=S) / n
             val = pd.DataFrame({spec["feature"]: v}, index=samples.astype(str))
             val = stats.mask_panel_gaps(s, val)[spec["feature"]].to_numpy()
@@ -110,6 +135,54 @@ def per_sample(s: Store, spec: dict, extra: np.ndarray | None = None) -> pd.Seri
     out[n < MIN_CELLS] = np.nan
     sg = s.obs.groupby(s.role("sample"), observed=True)[spec["group_column"]].first().astype(str)
     return out[sg.reindex(out.index).isin([str(g) for g in groups]).to_numpy()]
+
+
+def _model_per_sample(s: Store, spec: dict, m: np.ndarray, codes: np.ndarray, S: int):
+    from .context import ContextModel, _comps, counterfactual
+    cm = ContextModel(s, spec["model"])
+    cells = np.flatnonzero(m)
+    if spec["kind"] == "context":  # neighbourhood part only: every cell predicted at the reference condition
+        v = cm.predict(cells, [spec["feature"]], group=spec["b"])[:, 0]
+    else:
+        comps, cats = _comps(s, cells)
+        cf = counterfactual(comps, cats, spec["remove"], spec["replace"])
+        ok = ~np.isnan(np.hstack(cf)).any(1) & (np.abs(np.hstack(cf) - np.hstack(comps)).sum(1) > 1e-6)
+        cells = cells[ok]
+        v = (cm.predict(cells, [spec["feature"]], [c[ok] for c in cf]) -
+             cm.predict(cells, [spec["feature"]], [c[ok] for c in comps]))[:, 0]
+    n = np.bincount(codes[cells], minlength=S).astype(float)
+    with np.errstate(all="ignore"):
+        return np.bincount(codes[cells], weights=v, minlength=S) / n, n
+
+
+def _model_tests(s: Store, spec: dict, eff: float, add):
+    from .context import SPILL_LOG, ContextModel, _comps, counterfactual, drivers, source_gap
+    cm = ContextModel(s, spec["model"])
+    pop_idx = cm.cells_of(spec["cells"])
+    ct = cm.single_type(pop_idx)
+    g = spec["feature"]
+    pf = cm.perf[(cm.perf.cell_type == ct) & (cm.perf.gene == g)].iloc[0]
+    add("model_fit", bool(pf.r2_context >= 0.02 and pf.r2_sample >= 0.5),
+        f"held-out fit for {g} in {ct}: r2 beyond condition {pf.r2_context:.3f} (need ≥ 0.02), sample-level "
+        f"r2 {pf.r2_sample:.3f} (need ≥ 0.5)")
+    if spec["kind"] == "perturbation":
+        movers = list(spec["remove"]) + list(spec["replace"].keys())
+        gm = s.mask({spec["group_column"]: spec["a"]})
+        cells = np.intersect1d(pop_idx, np.flatnonzero(gm))
+        comps, cats = _comps(s, cells)
+        cf = counterfactual(comps, cats, spec["remove"], spec["replace"])
+        ok = ~np.isnan(np.hstack(cf)).any(1) & (np.abs(np.hstack(cf) - np.hstack(comps)).sum(1) > 1e-6)
+        sup = cm.support(cells[ok], [c[ok] for c in cf]) if ok.any() else 0.0
+        add("support", sup >= 0.8, f"{sup:.0%} of edited neighbourhoods in {spec['a']} resemble training data")
+    else:
+        dr = drivers(s, spec["model"], ct, [g])[g]
+        movers = [dr.idxmin()]
+    gaps = {x: source_gap(cm, ct, x, g) for x in movers if x != ct}
+    worst = max(gaps, key=gaps.get) if gaps else None
+    add("not_spillover", not (worst and gaps[worst] >= SPILL_LOG),
+        (f"{worst} expresses {g} {gaps[worst]:+.2f} log units vs {ct}" if worst else "driver is the cell type itself")
+        + (" - effect indistinguishable from transcripts picked up from it" if worst and gaps[worst] >= SPILL_LOG
+           else ""))
 
 
 def _groups(s: Store, spec: dict, idx) -> pd.Series:
@@ -310,6 +383,9 @@ def run_tests(s: Store, spec: dict) -> dict:
                 f"highest expresser: {top_type}" + (" - likely ambient/spillover" if shared >= 0.6 and ambient else ""),
                 core=ambient)
 
+    if spec["kind"] in MODEL_KINDS and np.isfinite(eff):
+        _model_tests(s, spec, eff, add)
+
     if spec["kind"] in ("expression", "colocalisation") and np.isfinite(eff):
         ct = _population_type(s, spec)
         if ct:
@@ -372,6 +448,9 @@ def fingerprint(s: Store, spec: dict) -> str:
     if nc:
         cols.add(nc)
     h = hashlib.sha1(json.dumps(spec, sort_keys=True, default=str).encode())
+    if spec.get("model"):
+        w = s.path / "models" / spec["model"] / "weights.npz"
+        h.update(f"{w.stat().st_mtime if w.exists() else 'missing'}".encode())
     for c in sorted(x for x in cols if x and x in s.obs.columns):
         h.update(c.encode())
         h.update(pd.util.hash_pandas_object(s.obs[c].astype(str), index=False).to_numpy().tobytes())

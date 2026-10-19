@@ -34,6 +34,7 @@ gate or score you'll use as a proxy and why.
 | Spatially patterned genes | `spatial_autocorrelation` |
 | Case vs control - what separates them? | `case_control(a, b)` first; then `separability(a, b, cells={cell_type: ...}, features='both')` per population of interest; `compare_groups` for details; `plot_sample_bars` |
 | Who might signal to whom? | `ligand_receptor(sender, receiver, a, b)` - only with co-localisation support, a hypothesis |
+| Does X depend on who surrounds the cell? How much of a condition change goes with the lesion vs the whole population? What if neighbours were different? | `fit_context_model(name, groups=<one experiment>)` once (check list in `describe_structures`), then `context_genes`, `explain_difference(a, b, cells)`, `perturb_neighbourhood(remove=/replace=)` |
 | Anything else | `run_python(code, title)` - store API: `s.obs`, `s.xy`, `s.gene(g)`, `s.mask(filters)`, `s.knn`, modules `stats`, `spatial`, `analysis`; print aggregates only |
 
 Filters: `{column: value | [values]}`, `{column: {"not": [...]}}`, numeric/gene `{"Spp1": {">": 1}}`.
@@ -56,6 +57,10 @@ b=None for "X sits next to Y"). Then report it by verdict:
   oligodendrocytes, so likely spillover"), or drop it.
 - `not_supported` / `refuted` / `underpowered`: say so plainly. A refuted hypothesis is a result.
 Exploratory screens (`case_control`, `separability`) generate candidates; only tested claims are conclusions.
+Model results go through the ledger as `kind='context'` (the neighbourhood part of a change) or
+`kind='perturbation'` (an in-silico edit, b=None = vs no change). These add model-fit, support (edited
+neighbourhoods seen in training) and not-spillover tests. Phrase passing ones as associations learned across
+animals ("microglia with more microglial neighbours express more *Spp1*"), never as causal effects.
 
 Then check the rest of the answer against tool output from this session:
 - Is each number copied from a tool result (not recalled or rounded into a different claim)?
