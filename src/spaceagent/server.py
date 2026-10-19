@@ -35,7 +35,8 @@ FILTERS_DOC = ("filters: {column: value | [values]} on obs columns; numeric colu
 mcp = MCPServer(
     name="spaceagent",
     instructions=(
-        "Tools over one spatial omics dataset. Start every session with dataset_card() and read_findings(). "
+        "Tools over one spatial omics dataset. Start every session with dataset_card(), read_findings() and "
+        "list_claims(). Before stating any condition or co-localisation claim, run test_claim on it. "
         "Use column names exactly as listed in the card. Treat samples (not cells) as replicates for any "
         "group comparison, and check the card's caveats (panel gaps, confounding) before concluding. "
         + FILTERS_DOC
@@ -253,6 +254,48 @@ def run_python(code: str, title: str = "analysis") -> list:
     from .run import run_python as _run
     text, figs = _run(S(), code, title)
     return [text] + [Image(path=p) for p in figs[:4]]
+
+
+# -- claims ledger ---------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def test_claim(statement: str, kind: str, feature: str, a: str, b: str | None = None,
+               cells: dict[str, Any] | None = None, direction: str = "up", column: str | None = None,
+               group_column: str | None = None, k: int = 10, min_effect: float | None = None,
+               stratify: str | None = None, record: bool = True) -> list:
+    """Try to break a claim before stating it, and record the verdict in the dataset's claims ledger.
+
+    kind: 'expression' (feature = gene/score, in `cells`), 'composition' (feature = a value of `column`,
+    share among `cells`) or 'colocalisation' (feature = a value of `column`, among the k nearest neighbours
+    of `cells`, log2 O/E; b=None tests against expected). direction: 'up'/'down' = a relative to b.
+    Reduces to one value per sample, then runs: direction/size, replicates, sample separation, leave-one-
+    sample-out, exact label permutation, and for expression spillover from the main neighbouring source
+    cell type, niche stratification, identity-marker confidence and specificity.
+    Verdict: robust / fragile / underpowered / not_supported / refuted. Returns the report and a
+    per-sample figure. Re-testing an identical spec appends to that claim's history."""
+    text, fig = tools.test_claim(S(), statement, kind, feature, a, b, cells, direction, column, group_column,
+                                 k, min_effect, stratify, record)
+    return [text, Image(path=fig)]
+
+
+@mcp.tool()
+def list_claims() -> str:
+    """The claims ledger: every tested claim with its latest verdict, and whether the data it used has
+    changed since (stale -> recheck_claims)."""
+    return tools.list_claims(S())
+
+
+@mcp.tool(structured_output=False)
+def show_claim(claim_id: str) -> list:
+    """Full test report, per-sample values, history and figure for one recorded claim (e.g. 'C003')."""
+    text, fig = tools.show_claim(S(), claim_id)
+    return [text, Image(path=fig)]
+
+
+@mcp.tool()
+def recheck_claims(ids: list[str] | None = None, force: bool = False) -> str:
+    """Re-run claims whose underlying data changed (annotation, derived columns, expression), or all with
+    force=True, and report verdict changes."""
+    return tools.recheck_claims(S(), ids, force)
 
 
 @mcp.tool()

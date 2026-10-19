@@ -111,8 +111,9 @@ class Store:
         self.gene_index = {g: i for i, g in enumerate(self.genes)}
         self._gene_lower = {g.lower(): g for g in self.genes}
         self.roles: dict = s["roles"]
-        self.columns: dict = s["columns"]
-        self.columns.update(self.meta.get("derived", {}))
+        for name in self.meta.get("derived", {}):  # older stores leaked derived columns into the schema
+            s["columns"].pop(name, None)
+        self.columns: dict = {**s["columns"], **self.meta.get("derived", {})}
         self._obs = None
         self._xy = None
         self._expr = None

@@ -368,3 +368,83 @@ def ligand_receptor(s: Store, sender: str | None = None, receiver: str | None = 
            "colocalisation_log2_oe = how much the sender and receiver types neighbour each other (>0 = adjacent). "
            "Expression-based inference: a hypothesis, not evidence of signalling.")
     return hdr + "\n\n" + _md_table(df.round(4), max_rows=n_top)
+
+
+# -- claims ledger ----------------------------------------------------------------------
+VERDICT_NOTE = {
+    "robust": "survived every attempt to break it",
+    "fragile": "direction holds but at least one falsification test failed - qualify or drop",
+    "underpowered": "fewer than 2 samples in a group - cannot be tested across replicates",
+    "not_supported": "effect absent or below the minimum size",
+    "refuted": "the data show the opposite direction",
+}
+
+
+def _claim_md(c: dict) -> str:
+    from .claims import describe
+    h = c["history"][-1]
+    sm = h["summary"]
+    lines = [f"# {c['id'] or '(not recorded)'} - {h['verdict'].upper()}: {VERDICT_NOTE[h['verdict']]}",
+             f"Statement: {c['statement']}", f"Tested as: {describe(c['spec'])}", "",
+             f"Effect {sm['effect']:+.3f} (mean {sm['mean_a']:.3f} in {c['spec']['a']}"
+             + (f" vs {sm['mean_b']:.3f} in {c['spec']['b']})" if sm["mean_b"] is not None else ")")
+             + f"; n = {sm['n_a']}" + (f" vs {sm['n_b']}" if sm["n_b"] is not None else "") + " samples", ""]
+    t = pd.DataFrame(h["tests"])
+    t["result"] = t["passed"].map({True: "pass", False: "FAIL", None: "n/a"})
+    t.loc[~t["core"], "result"] = t.loc[~t["core"], "result"].map({"pass": "pass", "FAIL": "caveat", "n/a": "n/a"})
+    lines += [_md_table(t.set_index("test")[["result", "detail"]]), ""]
+    ps = pd.DataFrame({"value": pd.Series(h["per_sample"], dtype=float), "group": pd.Series(h["groups"])})
+    lines += ["Per-sample values:", "", _md_table(ps.sort_values("group").round(3))]
+    if np.isfinite(sm.get("perm_p_min") or np.nan) and sm["perm_p_min"] > 0.05:
+        lines += ["", f"Note: with this design no test can reach p < {sm['perm_p_min']:.2g}; "
+                  "'robust' means consistent across every sample, not statistically significant."]
+    if len(c["history"]) > 1:
+        lines += ["", "History: " + " → ".join(f"{x['verdict']} ({x['run_at']})" for x in c["history"])]
+    return "\n".join(lines)
+
+
+def test_claim(s: Store, statement: str, kind: str, feature: str, a: str, b: str | None = None,
+               cells: dict | None = None, direction: str = "up", column: str | None = None,
+               group_column: str | None = None, k: int = 10, min_effect: float | None = None,
+               stratify: str | None = None, record: bool = True):
+    from . import claims, plots
+    spec = claims.make_spec(s, kind, feature, a, b, cells, direction, column, group_column, k, min_effect, stratify)
+    c = claims.test_claim(s, statement, spec, record=record)
+    return _claim_md(c), plots.claim(s, c)
+
+
+def list_claims(s: Store) -> str:
+    from .claims import fingerprint, load_ledger
+    cl = load_ledger(s)
+    if not cl:
+        return "no claims recorded yet"
+    rows = []
+    for c in cl:
+        h = c["history"][-1]
+        try:
+            stale = fingerprint(s, c["spec"]) != h["fingerprint"]
+        except Exception:
+            stale = True
+        rows.append({"id": c["id"], "verdict": h["verdict"], "effect": round(h["summary"]["effect"], 3),
+                     "n": f"{h['summary']['n_a']}v{h['summary']['n_b']}", "checked": h["run_at"],
+                     "stale": "yes - recheck" if stale else "", "statement": c["statement"]})
+    return _md_table(pd.DataFrame(rows).set_index("id"))
+
+
+def show_claim(s: Store, claim_id: str):
+    from . import plots
+    from .claims import load_ledger
+    c = next((c for c in load_ledger(s) if c["id"] == claim_id), None)
+    if c is None:
+        raise KeyError(f"no claim {claim_id!r}")
+    return _claim_md(c), plots.claim(s, c)
+
+
+def recheck_claims(s: Store, ids: list[str] | None = None, force: bool = False) -> str:
+    from .claims import recheck
+    ch = recheck(s, ids, force)
+    if not ch:
+        return "all claims are up to date with the data (nothing re-run)"
+    df = pd.DataFrame(ch).set_index("id")
+    df["changed"] = np.where(df["before"] != df["after"], "⚠", "")
+    return _md_table(df[["changed", "before", "after", "note", "statement"]])

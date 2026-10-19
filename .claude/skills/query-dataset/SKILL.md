@@ -5,8 +5,14 @@ description: Answer a biological question about the loaded spatial omics dataset
 
 # Answering a question about the dataset: Plan → Act → Conclude → Verify
 
+SpaceAgent's rule: **no condition or co-localisation claim reaches the user untested.** Every such claim
+goes through `test_claim`, which tries to break it (leave-one-sample-out, exact label permutation,
+spillover from neighbouring source cells, ambient/pan-cell-type shifts, niche composition, annotation
+confidence) and records the verdict in the dataset's claims ledger.
+
 ## 0. Orient (once per session)
-`dataset_card()`, `read_findings()`, `describe_structures()`. Note the role columns (sample / cell_type /
+`dataset_card()`, `read_findings()`, `list_claims()`, `describe_structures()`. If any claim is marked
+stale, run `recheck_claims()` and mention verdicts that changed. Note the role columns (sample / cell_type /
 group), the caveats (confounding, panel gaps, pan-cell-type shifts), the niche columns and any derived
 columns from earlier sessions. Use names exactly as the card spells them.
 
@@ -41,7 +47,17 @@ Direct answer first, then the key numbers (per group, n samples), figures, cavea
 up. Italicise mouse gene symbols (*Spp1*).
 
 ## 5. Verify (before sending)
-Check every claim in the answer against tool output from this session:
+**Falsify.** For each condition-difference or co-localisation claim you intend to make, call `test_claim` with
+the narrowest honest spec (gene + population + the two groups of one experiment; `colocalisation` with
+b=None for "X sits next to Y"). Then report it by verdict:
+- `robust`: state it, give the effect and the per-sample values. If the design caps permutation p above 0.05,
+  say "consistent in every animal", not "significant".
+- `fragile`: state it only with the failed test named ("...but the effect disappears away from
+  oligodendrocytes, so likely spillover"), or drop it.
+- `not_supported` / `refuted` / `underpowered`: say so plainly. A refuted hypothesis is a result.
+Exploratory screens (`case_control`, `separability`) generate candidates; only tested claims are conclusions.
+
+Then check the rest of the answer against tool output from this session:
 - Is each number copied from a tool result (not recalled or rounded into a different claim)?
 - Replicates = samples. With n=2-3 per group, report effect sizes and per-sample values; p-values and
   Hedges g with tiny n are unstable, and nhood z-scores grow with cell number (compare between groups,
@@ -55,5 +71,6 @@ Check every claim in the answer against tool output from this session:
 Drop or qualify any claim that fails.
 
 ## 6. Record
-`add_finding(title, text)` for non-trivial results: the numbers, the exact tool calls / analysis script
-paths, and the caveats, so the next session starts from them.
+Tested claims are already in the ledger (cite their IDs, e.g. C004). Use `add_finding(title, text)` for the
+narrative that ties claims together (which claim IDs, which figures/scripts, open questions), so the next
+session starts from them.

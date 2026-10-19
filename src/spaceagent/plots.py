@@ -107,3 +107,32 @@ def sample_bars(s: Store, gene: str, group: str, cell_type: str | None = None):
     fig.savefig(p, bbox_inches="tight")
     plt.close(fig)
     return p
+
+
+def claim(s: Store, c: dict):
+    """Per-sample values behind a claim, by group, with the verdict."""
+    h = c["history"][-1]
+    sp = c["spec"]
+    df = pd.DataFrame({"v": pd.Series(h["per_sample"], dtype=float), "g": pd.Series(h["groups"])}).dropna()
+    order = [sp["a"]] + ([sp["b"]] if sp["b"] is not None else [])
+    fig, ax = plt.subplots(figsize=(1.4 * len(order) + 2.2, 3.2), dpi=110)
+    for i, grp in enumerate(order):
+        d = df[df["g"] == str(grp)]
+        x = i + np.linspace(-0.12, 0.12, max(len(d), 1))[:len(d)]
+        ax.scatter(x, d["v"], color=PALETTE[2 * i], s=30, zorder=3)
+        for xi, (smp, yi) in zip(x, d["v"].items()):
+            ax.annotate(smp, (xi, yi), fontsize=5, xytext=(4, 0), textcoords="offset points", va="center")
+        if len(d):
+            ax.hlines(d["v"].mean(), i - 0.25, i + 0.25, color="k", lw=1)
+    if sp["b"] is None:
+        ax.axhline(0, color="grey", lw=0.6, ls="--")
+    ax.set_xticks(range(len(order)), order, fontsize=8)
+    ax.set_xlim(-0.6, len(order) - 0.4)
+    unit = {"expression": "mean log-expression", "composition": "log2 share",
+            "colocalisation": "log2 O/E"}[sp["kind"]]
+    ax.set_ylabel(unit, fontsize=8)
+    ax.set_title(f"{c['id'] or 'unrecorded'}: {h['verdict'].upper()}\n{c['statement'][:70]}", fontsize=8)
+    p = _out(s, f"claim_{c['id'] or 'tmp'}")
+    fig.savefig(p, bbox_inches="tight")
+    plt.close(fig)
+    return p
