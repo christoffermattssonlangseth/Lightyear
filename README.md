@@ -100,6 +100,20 @@ lightyear ingest <cupriZONE h5ad> stores/cuprizone --config configs/cuprizone.ya
 lightyear ingest <RRMAP2 annotated h5ad> stores/rrmap2 --config configs/rrmap2.yaml
 ```
 
+## Chat app
+
+```bash
+pip install -e '.[gui]'
+lightyear gui            # http://127.0.0.1:8790, every store under stores/
+```
+
+A local web app: pick a dataset, ask questions, and watch the agent plan, call tools (collapsible, with their
+inputs and outputs) and show figures inline. The side panel shows the claims ledger (verdict badges; click a
+claim for its tests, per-animal values and figure), the findings log and the dataset card. Each chat is a
+Claude Agent SDK session using your Claude Code login; its only tools are the Lightyear tools for that
+dataset (no shell, no file access), so what leaves the machine is the same as in Claude Code: aggregates and
+figures.
+
 ## Query it
 
 Each store gets its own MCP server in `.mcp.json`; start Claude Code in this folder. The `query-dataset` skill

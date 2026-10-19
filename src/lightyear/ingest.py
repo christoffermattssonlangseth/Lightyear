@@ -360,6 +360,9 @@ def ingest(h5ad, out, config_path=None, layer=None, rebuild_store=False, k_neigh
         store.meta["dataset_description"] = cfg.get("description", store.meta.get("dataset_description", ""))
         store.save_meta()
         store = Store(out)
+    if cfg.get("niche_columns"):
+        store.meta["niche_columns"] = cfg["niche_columns"]
+        store.save_meta()
     if cfg.get("exclude_cell_types"):
         store.meta["exclude_cell_types"] = cfg["exclude_cell_types"]
         store.save_meta()

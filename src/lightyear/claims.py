@@ -323,6 +323,9 @@ def _shared_shift(s: Store, spec: dict, eff: float, pop: np.ndarray, g: pd.Serie
 def _niche_column(s: Store, spec: dict) -> str | None:
     if spec.get("stratify"):
         return spec["stratify"]
+    for col in s.meta.get("niche_columns", []):  # the dataset config's preferred niches first
+        if col in s.obs and col != spec["column"] and not any(k == col for k in spec["cells"]):
+            return col
     for col, info in s.columns.items():
         if info.get("role") == "niche" and col in s.obs and col != spec["column"] \
                 and 2 <= s.obs[col].nunique() <= 30 and not any(k == col for k in spec["cells"]):

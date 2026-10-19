@@ -1,4 +1,4 @@
-"""lightyear ingest <h5ad> <store> [--config cfg.yaml]  |  lightyear inspect <h5ad>  |  lightyear serve <store>"""
+"""lightyear ingest <h5ad> <store> [--config cfg.yaml] | inspect <h5ad> | serve <store> | gui [--stores dir]"""
 from __future__ import annotations
 
 import argparse
@@ -28,6 +28,11 @@ def main(argv=None):
     a = sub.add_parser("serve", help="run the MCP server over stdio")
     a.add_argument("store")
 
+    a = sub.add_parser("gui", help="local chat app over all stores in a directory")
+    a.add_argument("--stores", default="stores")
+    a.add_argument("--port", type=int, default=8790, help="first port to try (next free one is used)")
+    a.add_argument("--no-browser", action="store_true")
+
     args = ap.parse_args(argv)
     if args.cmd == "inspect":
         schema, _ = inspect_h5ad(args.h5ad, load_config(args.config))
@@ -42,6 +47,9 @@ def main(argv=None):
         from . import server
         server.STORE_PATH = args.store
         server.main()
+    elif args.cmd == "gui":
+        from .gui.app import main as gui_main
+        gui_main(args.stores, port=args.port, open_browser=not args.no_browser)
 
 
 if __name__ == "__main__":

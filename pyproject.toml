@@ -23,12 +23,16 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest"]
+gui = ["claude-agent-sdk", "fastapi", "uvicorn[standard]"]
 
 [project.scripts]
 lightyear = "lightyear.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+lightyear = ["gui/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
