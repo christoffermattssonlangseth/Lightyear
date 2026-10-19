@@ -1,4 +1,4 @@
-"""spaceagent ingest <h5ad> <store> [--config cfg.yaml]  |  spaceagent inspect <h5ad>  |  spaceagent serve <store>"""
+"""lightyear ingest <h5ad> <store> [--config cfg.yaml]  |  lightyear inspect <h5ad>  |  lightyear serve <store>"""
 from __future__ import annotations
 
 import argparse
@@ -10,7 +10,7 @@ from .schema import inspect_h5ad
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="spaceagent")
+    ap = argparse.ArgumentParser(prog="lightyear")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     a = sub.add_parser("inspect", help="print inferred column roles (no store written)")
@@ -38,7 +38,7 @@ def main(argv=None):
     elif args.cmd == "ingest":
         ingest(args.h5ad, args.store, args.config, args.layer, args.rebuild_store, args.k)
     elif args.cmd == "serve":
-        os.environ["SPACEAGENT_STORE"] = args.store
+        os.environ["LIGHTYEAR_STORE"] = args.store
         from . import server
         server.STORE_PATH = args.store
         server.main()

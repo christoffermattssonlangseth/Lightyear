@@ -1,6 +1,6 @@
 import numpy as np
 
-from spaceagent import claims, spatial, tools
+from lightyear import claims, spatial, tools
 
 
 def _verdict(s, **kw):
@@ -67,16 +67,33 @@ def test_ledger_and_recheck(toy):
 
 def test_ambient_shift_is_caught(toy):
     _, s = toy
-    # a T-cell gene that leaks into every cell type in treated samples (ambient RNA)
+    # contamination: treated A cells pick up a T-cell gene together with other T-cell transcripts (MarkT)
     treat = (s.obs.group == "treat").to_numpy()
     is_t = (s.obs.cell_type == "T").to_numpy()
+    has_markt = s.gene("MarkT") > 0
     rng = np.random.default_rng(1)
-    amb = np.where(is_t, 3.0, 0.2) + 0.6 * treat + rng.normal(0, 0.05, s.n_cells)
+    amb = np.where(is_t, 3.0, 0.2) + 2.0 * (treat & has_markt & ~is_t) + rng.normal(0, 0.05, s.n_cells)
     s.add_column("Amb", amb.astype(np.float32), "toy ambient", role="score")
     h = _verdict(s, kind="expression", feature="Amb", a="treat", b="ctrl", cells={"cell_type": "A"})
     t = {x["test"]: x for x in h["tests"]}
-    assert t["specificity"]["passed"] is False and t["specificity"]["core"] and "ambient" in t["specificity"]["detail"]
+    assert h["summary"]["effect"] > 0.1 and t["clean_cells"]["passed"] is False and "MarkT" in t["clean_cells"]["detail"]
     assert h["verdict"] == "fragile"
-    # the same shift in the main expresser is not penalised for it
-    h = _verdict(s, kind="expression", feature="Amb", a="treat", b="ctrl", cells={"cell_type": "T"})
-    assert not {x["test"]: x for x in h["tests"]}["specificity"]["core"]
+    # a genuine effect survives in clean cells
+    h = _verdict(s, kind="expression", feature="GeneDE", a="treat", b="ctrl", cells={"cell_type": "T"})
+    assert {x["test"]: x for x in h["tests"]}["clean_cells"]["passed"] in (True, None)
+
+
+def test_tissue_wide_shift_in_a_foreign_gene_is_ambiguous(toy):
+    _, s = toy
+    # interferon-like: every cell type induces the gene in treated animals, A cells at a substantial level
+    treat = (s.obs.group == "treat").to_numpy()
+    is_t = (s.obs.cell_type == "T").to_numpy()
+    rng = np.random.default_rng(2)
+    ifn = np.where(is_t, 1.2, 1.0) * treat + 0.1 + rng.normal(0, 0.05, s.n_cells)
+    s.add_column("Ifn", ifn.astype(np.float32), "toy tissue-wide response", role="score")
+    h = _verdict(s, kind="expression", feature="Ifn", a="treat", b="ctrl", cells={"cell_type": "A"})
+    t = {x["test"]: x for x in h["tests"]}
+    assert t["specificity"]["passed"] is False and not t["specificity"]["core"]
+    assert "tissue-wide" in t["specificity"]["detail"] and h["verdict"] == "ambiguous"  # T is the top expresser
+    h = _verdict(s, kind="expression", feature="Ifn", a="treat", b="ctrl", cells={"cell_type": "T"})
+    assert h["verdict"] == "robust"  # same shift in its main expresser

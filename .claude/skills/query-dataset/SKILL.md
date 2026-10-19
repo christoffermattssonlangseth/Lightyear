@@ -1,11 +1,11 @@
 ---
 name: query-dataset
-description: Answer a biological question about the loaded spatial omics dataset with the spaceagent MCP tools - interpret annotations and niches, analyse spatial neighbourhoods, compare cases vs controls, run custom analyses. Grounded in numbers, per-sample replication and figures. Use whenever the user asks what is in the data, where something is, what surrounds what, whether something changes between conditions, or what separates groups.
+description: Answer a biological question about the loaded spatial omics dataset with the lightyear MCP tools - interpret annotations and niches, analyse spatial neighbourhoods, compare cases vs controls, run custom analyses. Grounded in numbers, per-sample replication and figures. Use whenever the user asks what is in the data, where something is, what surrounds what, whether something changes between conditions, or what separates groups.
 ---
 
 # Answering a question about the dataset: Plan → Act → Conclude → Verify
 
-SpaceAgent's rule: **no condition or co-localisation claim reaches the user untested.** Every such claim
+Lightyear's rule: **no condition or co-localisation claim reaches the user untested.** Every such claim
 goes through `test_claim`, which tries to break it (leave-one-sample-out, exact label permutation,
 spillover from neighbouring source cells, ambient/pan-cell-type shifts, niche composition, annotation
 confidence) and records the verdict in the dataset's claims ledger.
@@ -55,6 +55,11 @@ b=None for "X sits next to Y"). Then report it by verdict:
   say "consistent in every animal", not "significant".
 - `fragile`: state it only with the failed test named ("...but the effect disappears away from
   oligodendrocytes, so likely spillover"), or drop it.
+- `ambiguous`: replicates agree, but the gene moves in most cell types and this population is not its main
+  expresser. The data cannot separate ambient RNA (e.g. *Gfap* in neurons, *Mbp* in microglia: transcripts in
+  astrocyte or myelin processes) from a genuine tissue-wide response (e.g. interferon-induced MHC-I in glia).
+  Decide with biological knowledge, say explicitly that the call rests on it, and say what would settle it
+  (clean single-cell reference, protein staining, smFISH).
 - `not_supported` / `refuted` / `underpowered`: say so plainly. A refuted hypothesis is a result.
 Exploratory screens (`case_control`, `separability`) generate candidates; only tested claims are conclusions.
 Model results go through the ledger as `kind='context'` (the neighbourhood part of a change) or

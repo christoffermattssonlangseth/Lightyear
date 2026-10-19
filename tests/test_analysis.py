@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from spaceagent import analysis, resources, run, spatial, tools
+from lightyear import analysis, resources, run, spatial, tools
 
 
 @pytest.fixture(autouse=True)

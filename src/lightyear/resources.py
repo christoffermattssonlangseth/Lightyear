@@ -1,4 +1,4 @@
-"""External knowledge bases, downloaded once and cached in ~/.cache/spaceagent.
+"""External knowledge bases, downloaded once and cached in ~/.cache/lightyear.
 
 - PanglaoDB + CellMarker 2.0 marker lists (annotation suggestions)
 - OmniPath ligand-receptor interactions (ligrecextra), per organism
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 
-CACHE = Path(os.environ.get("SPACEAGENT_CACHE", Path.home() / ".cache" / "spaceagent"))
+CACHE = Path(os.environ.get("LIGHTYEAR_CACHE", Path.home() / ".cache" / "lightyear"))
 _SA = "https://raw.githubusercontent.com/Brogrammer94/SpatialAgent/main/data/"
 URLS = {
     "panglao": _SA + "PanglaoDB_markers_27_Mar_2020.tsv",

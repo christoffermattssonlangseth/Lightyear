@@ -24,44 +24,72 @@ def _out(s: Store, stem: str):
 
 def spatial(s: Store, sample: str, color: str, filters: dict | None = None,
             bbox: list[float] | None = None, highlight: list[str] | None = None, point_size: float | None = None):
-    """Scatter one section coloured by a gene or an obs column.
+    """Scatter coloured by a gene or an obs column. `sample` is a sample (all its sections/pieces drawn
+    side by side, shared colours) or a single section.
 
     highlight: for a categorical colour, draw only these categories in colour (rest grey).
-    bbox: [xmin, xmax, ymin, ymax] to zoom.
+    bbox: [xmin, xmax, ymin, ymax] to zoom (coordinates of a single section).
     """
-    samp = s.role("sample")
-    m = s.mask({samp: sample})
+    samp, secc = s.role("sample"), s.role("section")
+    if secc != samp and str(sample) in set(s.strcol(secc)):
+        secs = [str(sample)]
+        base = s.mask({secc: sample})
+    else:
+        base = s.mask({samp: sample})
+        if not base.any():
+            raise KeyError(f"{sample!r} is not a value of {samp!r}" + (f" or {secc!r}" if secc != samp else ""))
+        secs = sorted(set(s.strcol(secc)[base]))[:6]
     xy = s.xy
     if bbox:
         x0, x1, y0, y1 = bbox
-        m &= (xy[:, 0] >= x0) & (xy[:, 0] <= x1) & (xy[:, 1] >= y0) & (xy[:, 1] <= y1)
-    sel = s.mask(filters) & m if filters else m
-    fig, ax = plt.subplots(figsize=(8, 8), dpi=110)
-    ps = point_size or max(0.2, min(6.0, 4e4 / max(m.sum(), 1)))
-    ax.scatter(xy[m & ~sel, 0], xy[m & ~sel, 1], s=ps, c="#dddddd", linewidths=0, rasterized=True)
-    if color in s.obs.columns and not pd.api.types.is_float_dtype(s.obs[color]):
+        base &= (xy[:, 0] >= x0) & (xy[:, 0] <= x1) & (xy[:, 1] >= y0) & (xy[:, 1] <= y1)
+    sel_all = s.mask(filters) & base if filters else base
+    categorical = color in s.obs.columns and not pd.api.types.is_float_dtype(s.obs[color])
+    if categorical:
         lab = s.obs[color].astype(str).to_numpy()
-        cats = sorted(pd.unique(lab[sel]))
+        cats = sorted(pd.unique(lab[sel_all]))
         shown = [c for c in cats if not highlight or c in highlight]
-        if highlight:
-            rest = sel & ~np.isin(lab, shown)
-            ax.scatter(xy[rest, 0], xy[rest, 1], s=ps, c="#cccccc", linewidths=0, rasterized=True)
-        for i, c in enumerate(shown):
-            k = sel & (lab == c)
-            ax.scatter(xy[k, 0], xy[k, 1], s=ps, color=PALETTE[i % len(PALETTE)], label=c, linewidths=0, rasterized=True)
-        ax.legend(markerscale=max(1, 8 / ps), fontsize=7, loc="center left", bbox_to_anchor=(1, 0.5), frameon=False)
     else:
         v = s.obs[color].to_numpy(float) if color in s.obs.columns else s.gene(color)
-        idx = np.flatnonzero(sel)
-        idx = idx[np.argsort(v[idx])]  # high values on top
-        vmax = np.nanquantile(v[idx], 0.99) if len(idx) else 1
-        sc = ax.scatter(xy[idx, 0], xy[idx, 1], s=ps, c=v[idx], cmap="magma_r" if color not in s.obs else "viridis",
-                        vmin=0 if color not in s.obs else None, vmax=vmax or None, linewidths=0, rasterized=True)
-        fig.colorbar(sc, ax=ax, shrink=0.6, label=color)
-    ax.set_aspect("equal")
-    ax.invert_yaxis()
-    ax.set_title(f"{sample}: {color}" + (f" | {filters}" if filters else ""), fontsize=9)
-    ax.set_xticks([]); ax.set_yticks([])
+        vmax = np.nanquantile(v[sel_all], 0.99) if sel_all.any() else 1
+    n = len(secs)
+    fig, axes = plt.subplots(1, n, figsize=(min(8 * n, 24), 8 if n == 1 else 24 / n), dpi=110, squeeze=False)
+    sec_arr = s.strcol(secc)
+    for ax, se in zip(axes[0], secs):
+        m = base & (sec_arr == se)
+        sel = sel_all & m
+        ps = point_size or max(0.2, min(6.0, 4e4 / max(m.sum(), 1)))
+        ax.scatter(xy[m & ~sel, 0], xy[m & ~sel, 1], s=ps, c="#dddddd", linewidths=0, rasterized=True)
+        if categorical:
+            if highlight:
+                rest = sel & ~np.isin(lab, shown)
+                ax.scatter(xy[rest, 0], xy[rest, 1], s=ps, c="#cccccc", linewidths=0, rasterized=True)
+            for i, c in enumerate(shown):
+                k = sel & (lab == c)
+                ax.scatter(xy[k, 0], xy[k, 1], s=ps, color=PALETTE[i % len(PALETTE)], label=c, linewidths=0,
+                           rasterized=True)
+        else:
+            idx = np.flatnonzero(sel)
+            idx = idx[np.argsort(v[idx])]  # high values on top
+            sc = ax.scatter(xy[idx, 0], xy[idx, 1], s=ps, c=v[idx],
+                            cmap="magma_r" if color not in s.obs else "viridis",
+                            vmin=0 if color not in s.obs else None, vmax=vmax or None, linewidths=0, rasterized=True)
+        ax.set_aspect("equal")
+        ax.invert_yaxis()
+        ax.set_xticks([]); ax.set_yticks([])
+        ax.set_title(se if n > 1 else f"{sample}: {color}" + (f" | {filters}" if filters else ""), fontsize=9)
+    if categorical:
+        handles, labels = axes[0][0].get_legend_handles_labels()
+        for ax in axes[0][1:]:
+            for h, l in zip(*ax.get_legend_handles_labels()):
+                if l not in labels:
+                    handles.append(h); labels.append(l)
+        fig.legend(handles, labels, markerscale=4, fontsize=7, loc="center left", bbox_to_anchor=(1, 0.5),
+                   frameon=False)
+    else:
+        fig.colorbar(sc, ax=axes[0].tolist(), shrink=0.6, label=color)
+    if n > 1:
+        fig.suptitle(f"{sample}: {color}" + (f" | {filters}" if filters else ""), fontsize=10)
     p = _out(s, f"spatial_{sample}_{color}_{filters or ''}_{bbox or ''}")
     fig.savefig(p, bbox_inches="tight")
     plt.close(fig)

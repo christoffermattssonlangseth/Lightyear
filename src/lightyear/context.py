@@ -110,9 +110,24 @@ def _panel_gap_genes(s: Store, samples: list[str]) -> set[str]:
 
 
 @threadpool_limits.wrap(limits=BLAS_THREADS, user_api="blas")
+def _variable_genes(s: Store, cells_mask: np.ndarray, n: int, min_frac: float = 0.01) -> list[str]:
+    """The n most variable panel genes over the training cells (expressed in >= min_frac of them)."""
+    m = cells_mask.sum()
+    rows = []
+    for g in s.genes:
+        idx, val = s.gene_nz(g)
+        val = val[cells_mask[idx]]
+        mu = val.sum() / m
+        rows.append((g, len(val) / m, (val ** 2).sum() / m - mu ** 2))
+    df = pd.DataFrame(rows, columns=["gene", "frac", "var"])
+    return df[df.frac >= min_frac].nlargest(n, "var")["gene"].tolist()
+
+
 def fit(s: Store, name: str, groups: list[str] | None = None, cell_types: list[str] | None = None,
-        group_column: str | None = None, max_cells: int = 100_000, seed: int = 0, log=print) -> pd.DataFrame:
+        group_column: str | None = None, max_cells: int = 100_000, seed: int = 0, log=print,
+        genes: list[str] | None = None, max_genes: int = 1000) -> pd.DataFrame:
     """Fit cross-fitted context models for each cell type on the samples of `groups` (default: all).
+    Panels larger than `max_genes` are reduced to the most variable genes plus any `genes` asked for.
     Saves to <store>/models/<name>/ and returns the per-(cell type, gene) performance table."""
     samp, ctc = s.role("sample"), s.role("cell_type")
     group_column = group_column or s.role("group")
@@ -122,11 +137,13 @@ def fit(s: Store, name: str, groups: list[str] | None = None, cell_types: list[s
         raise ValueError("need at least 3 samples to cross-fit")
     fold_of = _folds(samples, sg)
     gaps = _panel_gap_genes(s, samples)
-    genes = [g for g in s.genes if g not in gaps]
     rng = np.random.default_rng(seed)
     smp_arr = s.strcol(samp)
     ct_arr = s.strcol(ctc)
     in_train = np.isin(smp_arr, samples)
+    asked = [s.resolve_gene(g) for g in (genes or [])]
+    pool = s.genes if len(s.genes) <= max_genes else _variable_genes(s, in_train, max_genes)
+    genes = [g for g in dict.fromkeys(pool + asked) if g not in gaps]
     types = cell_types or [c for c, n in pd.Series(ct_arr[in_train]).value_counts().items() if n >= MIN_CELLS]
     # subsample per (cell type, sample), then read every gene row once for all cell types
     picks = {}
@@ -143,7 +160,7 @@ def fit(s: Store, name: str, groups: list[str] | None = None, cell_types: list[s
            zip(picks, picks.values(), np.cumsum([0] + [len(p) for p in picks.values()])[:-1])}
     Y_all = np.empty((len(allc), len(genes)), np.float16)
     for j, g in enumerate(genes):
-        Y_all[:, j] = s.expr[s.gene_index[g]][allc]
+        Y_all[:, j] = s.gene(g)[allc]
     comps_all, cats = _comps(s, allc)
     levels = sorted(set(sg[samples]))
     grp_arr = s.strcol(group_column)

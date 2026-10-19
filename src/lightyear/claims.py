@@ -34,8 +34,11 @@ KINDS = ("expression", "composition", "colocalisation", "context", "perturbation
 MODEL_KINDS = ("context", "perturbation")
 MIN_EFFECT = {"expression": 0.1, "composition": 0.5, "colocalisation": 0.5, "context": 0.1, "perturbation": 0.1}
 MIN_CELLS = 20
-CORE = ("direction", "replicates", "separation", "leave_one_out", "permutation", "spillover", "niche",
-        "confident", "model_fit", "support", "not_spillover")  # specificity is core only when the population is not the main expresser
+REF_MIN_CELLS = 200  # cell types smaller than this (or named doublet) are not used as sources / references
+SHARED_SHIFT = 0.5  # share of other cell types moving the same way that makes a shift tissue-wide
+SPECIFIC_FRAC_REST = 0.2  # a source marker is detected in at most this fraction of other cell types' cells
+CORE = ("direction", "replicates", "separation", "leave_one_out", "permutation", "spillover", "clean_cells",
+        "niche", "confident", "model_fit", "support", "not_spillover")  # specificity is core only when the population is not the main expresser
 
 
 # -- spec -----------------------------------------------------------------------
@@ -235,9 +238,60 @@ def _permutation(v: pd.Series, g: pd.Series, spec: dict, obs: float, max_perm: i
     return p, 1.0 / len(null)
 
 
+def reference_types(s: Store) -> set[str]:
+    """Cell types usable as expression references: not doublet classes, not tiny, not excluded in config."""
+    ct = s.role("cell_type")
+    excl = set(s.meta.get("exclude_cell_types", []))
+    vc = pd.Series(s.strcol(ct)).value_counts()
+    return {c for c, n in vc.items() if n >= REF_MIN_CELLS and "doublet" not in c.lower() and c not in excl}
+
+
+def specific_markers(s: Store) -> pd.DataFrame:
+    """Per reference cell type, markers rarely detected elsewhere (cached in card/tables)."""
+    p = s.card_dir / "tables" / "markers_specific.parquet"
+    if p.exists():
+        return pd.read_parquet(p)
+    ref = reference_types(s)
+    ct = s.role("cell_type")
+    mean, frac, _ = stats.group_stats(s, [ct], mask=s.mask({ct: sorted(ref)}), min_cells=REF_MIN_CELLS)
+    mk = stats.markers(mean, frac, n_top=60, min_frac=0.3)
+    df = pd.concat([d.assign(cell_type=k) for k, d in mk.items()]).rename_axis("gene").reset_index()
+    df = df[df["frac_rest"] <= SPECIFIC_FRAC_REST]
+    df.to_parquet(p)
+    return df
+
+
+def _clean_cells_test(s: Store, spec: dict, eff: float, pop: np.ndarray, g: pd.Series, add):
+    """Ambient / spillover RNA arrives with the source cell's transcriptome. Keep only population cells with
+    zero counts for the main source type's specific markers and see whether the effect survives."""
+    hi = spec["a"] if spec["direction"] == "up" else spec["b"]
+    ref = reference_types(s) - {_population_type(s, spec)}
+    m, _, _ = stats.group_stats(s, [s.role("cell_type")], [spec["feature"]],
+                                mask=s.mask({spec["group_column"]: hi}) & ~pop, min_cells=REF_MIN_CELLS)
+    m = m[m.index.astype(str).isin(ref)].iloc[:, 0]
+    if m.empty:
+        return
+    src = str(m.idxmax())
+    mk = specific_markers(s)
+    genes = mk[(mk.cell_type == src) & (mk.gene != spec["feature"])].sort_values("lfc_vs_rest", ascending=False)
+    genes = genes["gene"].head(5).tolist()
+    if len(genes) < 2:
+        add("clean_cells", None, f"too few specific markers for {src}")
+        return
+    dirty = np.zeros(s.n_cells, bool)
+    for x in genes:
+        dirty[s.gene_nz(x)[0]] = True
+    e2 = _effect(per_sample(s, spec, ~dirty), g, spec)
+    share = float(1 - dirty[pop].mean())
+    add("clean_cells", _survives(eff, e2, spec) if np.isfinite(e2) else None,
+        f"main source {src} (mean {m[src]:.2f} in {hi}); effect in the {share:.0%} of cells with no {src} marker "
+        f"transcripts ({', '.join(genes)}): {e2:+.3f}")
+
+
 def _shared_shift(s: Store, spec: dict, eff: float, pop: np.ndarray, g: pd.Series):
     """Share of other cell types (enough cells in every sample) whose same contrast is >= half the claimed
-    effect in the claimed direction; plus the cell type with the highest mean expression."""
+    effect in the claimed direction; the cell type with the highest mean expression; and the population's
+    expression as a fraction of that top expresser's (linear scale, in the group where the gene is higher)."""
     groups = [spec["a"], spec["b"]]
     m = s.mask({spec["group_column"]: groups}) & ~pop
     mean, _, n = stats.group_stats(s, [s.role("sample"), s.role("cell_type")], [spec["feature"]], mask=m,
@@ -246,16 +300,24 @@ def _shared_shift(s: Store, spec: dict, eff: float, pop: np.ndarray, g: pd.Serie
     gap = stats.mask_panel_gaps(s, pd.DataFrame({spec["feature"]: 0.0}, index=wide.index))[spec["feature"]].isna()
     wide[gap.to_numpy()] = np.nan
     hits, n_types = 0, 0
+    ref = reference_types(s)
     for ct in wide.columns:
+        if str(ct) not in ref:
+            continue
         v = wide[ct]
         e = _effect(v, g.reindex(v.index), spec)
         if np.isfinite(e) and v.notna().sum() >= 4:
             n_types += 1
             hits += _signed(e, spec) >= 0.5 * _signed(eff, spec)
+    hi = spec["a"] if spec["direction"] == "up" else spec["b"]
     allm, _, _ = stats.group_stats(s, [s.role("cell_type")], [spec["feature"]],
-                                   mask=s.mask({spec["group_column"]: groups}), min_cells=MIN_CELLS)
+                                   mask=s.mask({spec["group_column"]: hi}), min_cells=MIN_CELLS)
+    allm = allm[allm.index.astype(str).isin(ref)]
     top = str(allm.iloc[:, 0].idxmax())
-    return (hits / n_types if n_types else 0.0), n_types, top
+    pm, _, _ = stats.group_stats(s, [s.role("cell_type")], [spec["feature"]],
+                                 mask=pop & s.mask({spec["group_column"]: hi}), min_cells=1)
+    ratio = float(np.expm1(pm.iloc[:, 0].mean()) / max(np.expm1(allm.iloc[:, 0].max()), 1e-9)) if len(pm) else np.nan
+    return (hits / n_types if n_types else 0.0), n_types, top, ratio
 
 
 def _niche_column(s: Store, spec: dict) -> str | None:
@@ -350,6 +412,7 @@ def run_tests(s: Store, spec: dict) -> dict:
                 np.maximum(np.bincount(ctc[m_out], minlength=len(cts)), 1)
             counts = np.bincount(ctc[m_out], minlength=len(cts))
             means[counts < 100] = -np.inf
+            means[~np.isin(np.asarray(cts, str), list(reference_types(s)))] = -np.inf
             src = int(np.argmax(means))
             idx, _ = spatial.neighbours(s, min(spec["k"], 10))
             is_src = (ctc == src) & ~pop
@@ -374,14 +437,20 @@ def run_tests(s: Store, spec: dict) -> dict:
                 f"cell-weighted effect within `{nc}` strata ({len(parts)} usable): {e2:+.3f}")
         # specificity: does the gene shift the same way in most other cell types? If so and the population
         # is not the gene's main expresser, the shift is the signature of ambient RNA / segmentation spillover.
-        shared, n_types, top_type = _shared_shift(s, spec, eff, pop, g)
+        _clean_cells_test(s, spec, eff, pop, g, add)
+        # specificity (caveat): a shift shared by most cell types is a tissue-wide change - a broad response
+        # (e.g. interferon / MHC-I) or diffuse ambient RNA; clean_cells is what separates ambient from genuine
+        shared, n_types, top_type, ratio = _shared_shift(s, spec, eff, pop, g)
         if n_types:
-            pop_ct = _population_type(s, spec)
-            ambient = top_type != pop_ct
-            add("specificity", shared < 0.6,
-                f"{shared:.0%} of {n_types} other cell types shift the same way (≥ half the effect); "
-                f"highest expresser: {top_type}" + (" - likely ambient/spillover" if shared >= 0.6 and ambient else ""),
-                core=ambient)
+            wide = shared >= SHARED_SHIFT
+            foreign = top_type != _population_type(s, spec)
+            add("specificity", not wide,
+                f"{shared:.0%} of {n_types} other cell types shift the same way (≥ half the effect); highest "
+                f"expresser: {top_type} (this population at {ratio:.0%} of its level)"
+                + (" - tissue-wide shift in a gene this population is not the main expresser of: ambient RNA "
+                   "or a genuine broad response (data alone cannot tell)" if wide and foreign else
+                   " - tissue-wide shift" if wide else ""), core=False)
+            tests[-1]["ambiguous"] = bool(wide and foreign)
 
     if spec["kind"] in MODEL_KINDS and np.isfinite(eff):
         _model_tests(s, spec, eff, add)
@@ -423,6 +492,8 @@ def _verdict(tests: list[dict], eff: float, spec: dict) -> str:
         return "underpowered"
     if any(x["passed"] is False for x in tests if x["core"]):
         return "fragile"
+    if any(x.get("ambiguous") for x in tests):
+        return "ambiguous"
     return "robust"
 
 
@@ -454,7 +525,7 @@ def fingerprint(s: Store, spec: dict) -> str:
     for c in sorted(x for x in cols if x and x in s.obs.columns):
         h.update(c.encode())
         h.update(pd.util.hash_pandas_object(s.obs[c].astype(str), index=False).to_numpy().tobytes())
-    e = s.path / "expr.npy"
+    e = s.path / ("expr_csc/data.npy" if s.sparse else "expr.npy")
     h.update(f"{e.stat().st_size}:{int(e.stat().st_mtime)}".encode())
     return h.hexdigest()[:16]
 

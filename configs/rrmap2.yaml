@@ -1,0 +1,51 @@
+name: rrmap2_xenium_eae
+description: |
+  RRMAP2: Xenium 5K mouse panel (5101 genes) of spinal cord in two EAE models. Chronic (MOG35-55, prefix C_):
+  CFA controls, non-symptomatic, onset (OS1), peak (PEAK1), mild/severe at day ~16 and ~30. Relapsing-
+  remitting (PLP, prefix RR_): PLP CFA controls, onset (ONSET1/2), peaks 1-3, remissions 1-2, monophasic.
+  67 animals on 54 Xenium sections across 6 runs; each animal contributes 1-3 tissue pieces
+  (spinal levels L = lumbar, T = thoracic, C = cervical; column `region`). Annotation: Anno_L1_curated
+  (19 classes incl. doublet classes), finer Anno_L2/L3/L4; curated lesion niches in Curated_niche_state.
+expr_description: log1p-normalised counts (scanpy normalize_total + log1p; layer `counts` has raw counts)
+organism: mouse
+sparse: true
+combine_columns:
+  cohort:
+    columns: [model, stage]
+    map: {"RELAPSE REMITTING": RR, CHRONIC: CH, "CH_MOG CFA": CH_CFA, "RR_PLP CFA": RR_CFA}
+roles:
+  sample: sample_name
+  section: kmeans_split_id
+  cell_type: Anno_L1_curated
+  group: cohort
+descriptions:
+  sample_name: animal (replicate unit); C_ = chronic model, RR_ = relapsing-remitting
+  sample_id: Xenium section (holds pieces of 1-3 animals)
+  kmeans_split_id: tissue piece (one animal, one spinal level) = spatial unit for neighbours
+  cohort: model + disease stage per animal (CH_/RR_ prefix); chronic MOG CFA and CFA controls merged into CH_CFA
+  stage: disease stage at sacrifice
+  model: CHRONIC (MOG) or RELAPSE REMITTING (PLP)
+  region: spinal level of the piece (L lumbar, T thoracic, C cervical)
+  score_sacrifice: clinical score at sacrifice
+  day_of_sacrifice: days post immunisation
+  run_id: Xenium run (batch)
+  Anno_L1_curated: curated major cell classes
+  Curated_niche_state: curated lesion / tissue state niches (Physiological, Lesion_active, Lesion_progressive, Lesion_mix, Lesion_reactive, Meninges, Vasculature)
+  Global_anatomical_region: WM, GM, dorsal/ventral horn, meninges, DRG, ...
+niche_columns: [Curated_niche_state, Global_anatomical_region, Physiological_niche, Combined_niche_group]
+contrasts:
+  - {column: cohort, a: CH_PEAK1, b: CH_CFA}
+  - {column: cohort, a: CH_SEVERE30, b: CH_CFA}
+  - {column: cohort, a: RR_PEAK1, b: RR_CFA}
+  - {column: cohort, a: RR_REMISSION1, b: RR_CFA}
+  - {column: cohort, a: RR_PEAK3, b: RR_CFA}
+caveats:
+  - Replicates are animals (sample_name), not sections or pieces. Several animals share a section and each animal spans 1-3 sections.
+  - Batch - chronic animals come from runs 1 and 5, RR animals from runs 2, 3, 5 and 6; CH_CFA merges run-1 "MOG CFA" and run-5 "CFA" controls. Few controls (CH_CFA 5, RR_CFA 3).
+  - Spinal level (region L/T/C) differs between pieces and animals (chronic run-1 animals have L+T or L+C only); level can confound comparisons.
+  - Earlier memory notes - images/transcripts carry a strong run signature; check contrasts within run where possible.
+  - Doublet and T_B_doublet classes exist in Anno_L1_curated; exclude them from biological claims.
+column_roles:
+  sample_id: other
+  unbiased_group: niche
+  region: other

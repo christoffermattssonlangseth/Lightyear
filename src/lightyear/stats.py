@@ -53,6 +53,13 @@ def group_stats(store: Store, cols: list[str], genes: list[str] | None = None,
     frac = np.empty((k, len(genes)), dtype=np.float32)
     with np.errstate(invalid="ignore", divide="ignore"):
         for j, g in enumerate(genes):
+            if store.sparse and g in store.gene_index:  # only touch the non-zeros
+                idx, val = store.gene_nz(g)
+                cc = codes[idx]
+                ok = cc >= 0
+                mean[:, j] = np.bincount(cc[ok], weights=val[ok], minlength=k) / n
+                frac[:, j] = np.bincount(cc[ok], weights=val[ok] > 0, minlength=k) / n
+                continue
             v = store.gene(g)[keep]
             mean[:, j] = np.bincount(c, weights=v, minlength=k) / n
             frac[:, j] = np.bincount(c, weights=(v > 0), minlength=k) / n

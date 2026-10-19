@@ -1,19 +1,21 @@
-# SpaceAgent
+# Lightyear
+
+**L**earns, **I**nterrogates, **G**enerates **H**ypotheses, **T**ests, **Y**ields **E**vidence **A**nd **R**efutations.
 
 Ask questions of a spatial omics dataset in plain language. The agent reads a precomputed
 **dataset card** and answers with numbers, per-sample replication and figures computed locally.
 
 ```
-.h5ad ──ingest──▶ store/ (obs.parquet, spatial.npy, expr.npy gene-major float16, knn_idx/dist.npy)
+.h5ad ──ingest──▶ store/ (obs.parquet, spatial.npy, expression gene-major: dense expr.npy or sparse expr_csc/, knn)
                     └─ card/ card.md + tables/*.parquet   ◀── "what the agent knows"
                     └─ findings.md                        ◀── what it learned in past sessions
                            │
-                   MCP server (spaceagent.server) ──▶ Claude Code / any MCP client
+                   MCP server (lightyear.server) ──▶ Claude Code / any MCP client
 ```
 
 ## What makes it different: a claims ledger
 
-Spatial case–control studies usually have 2–3 animals per group, so over-claiming is easy. In SpaceAgent
+Spatial case–control studies usually have 2–3 animals per group, so over-claiming is easy. In Lightyear
 a finding is a structured, re-runnable **claim**. `test_claim` reduces it to one value per sample and tries
 to break it:
 
@@ -24,17 +26,19 @@ to break it:
 | leave_one_out | does it survive dropping any single animal? |
 | permutation | exact sample-label permutation p, reported with the smallest p the design allows |
 | spillover | does it survive in cells with no neighbour of the main other source cell type? |
-| specificity | does the gene move the same way in most cell types (ambient / segmentation signature)? |
+| clean_cells | does it survive in cells with no transcripts of the main source cell type's specific markers? |
+| specificity | does the gene move the same way in most cell types? If so and this population is not its main expresser the verdict is `ambiguous`: diffuse ambient RNA (e.g. *Gfap*, *Mbp* in processes) and genuine tissue-wide responses (interferon / MHC-I) look identical in the data, so the agent must decide with prior knowledge and say so |
 | niche | does it hold within niches, or is it a niche-composition shift? |
 | confident | does it hold in cells with strong identity markers (misannotation, doublets)? |
 
-Verdicts (`robust`, `fragile`, `underpowered`, `not_supported`, `refuted`) are kept in `<store>/claims.json`
+Verdicts (`robust`, `ambiguous`, `fragile`, `underpowered`, `not_supported`, `refuted`) are kept in `<store>/claims.json`
 with a fingerprint of the data each claim used. When the annotation, a derived column or the expression
 changes, `list_claims` marks claims stale and `recheck_claims` re-runs them and reports flipped verdicts.
 
 On cupriZONE (acute CupRap vs control, 3 v 3) *Spp1*, *Cybb* up and *Tmem119* down in microglia are
 `robust`. *Mbp* down in microglia and *Gfap* up in oligodendrocytes, both known spillover artefacts,
-come out `fragile`: the ambient signature is found from the data, with no gene list.
+come out `ambiguous`, as does interferon-driven *H2-D1* in oligodendrocytes in RRMAP2 EAE: the data flag
+the tissue-wide pattern; whether it is artefact or biology is a knowledge call the agent has to make explicitly.
 
 ## A learned model of the tissue: what if the neighbours were different?
 
@@ -65,11 +69,13 @@ On cupriZONE (acute CupRap vs control, 6 animals, fit in ~40 s):
 
 ```bash
 pip install -e '.[test]'
-spaceagent inspect path/to/data.h5ad                 # check inferred roles first
-spaceagent ingest path/to/data.h5ad stores/<name> --config configs/<name>.yaml
+lightyear inspect path/to/data.h5ad                 # check inferred roles first
+lightyear ingest path/to/data.h5ad stores/<name> --config configs/<name>.yaml
 ```
 
-The config is optional: it pins column roles (sample / cell_type / group), adds column
+The config is optional: it pins column roles (sample = replicate unit, section = spatial unit if
+different, e.g. tissue pieces; cell_type; group), can build a group column from others
+(`combine_columns`, e.g. model + stage), adds column
 descriptions, picks niche columns, lists condition contrasts and adds known caveats
 (see `configs/cuprizone.yaml`). Without it, roles are inferred from column names and from
 which columns are constant within each sample.
@@ -79,9 +85,24 @@ cell-type abundance per group, marker genes, **panel coverage** (genes unmeasure
 samples), niche composition, kNN co-localisation per group, per-cell-type condition contrasts
 (sample-level pseudobulk) and auto-detected caveats.
 
+Panels too large to store densely (e.g. Xenium 5K) are written as a sparse gene-major (CSC) store;
+everything else works the same.
+
+## Datasets
+
+| server | store | data |
+|---|---|---|
+| `lightyear-cuprizone` | `stores/cuprizone` | Xenium 307 genes, mouse forebrain, cuprizone-rapamycin / OSM (GSE266690), 2.36 M cells, 19 sections |
+| `lightyear-rrmap2` | `stores/rrmap2` | Xenium 5K, mouse spinal cord, chronic + relapsing-remitting EAE, 1.38 M cells, 67 animals / 158 tissue pieces |
+
+```bash
+lightyear ingest <cupriZONE h5ad> stores/cuprizone --config configs/cuprizone.yaml
+lightyear ingest <RRMAP2 annotated h5ad> stores/rrmap2 --config configs/rrmap2.yaml
+```
+
 ## Query it
 
-Point `.mcp.json` at the store and start Claude Code in this folder. The `query-dataset` skill
+Each store gets its own MCP server in `.mcp.json`; start Claude Code in this folder. The `query-dataset` skill
 runs a Plan → Act → Conclude → Verify loop over 37 tools:
 
 | Area | Tools |
@@ -103,17 +124,17 @@ tool and in later sessions. Inspired in part by [SpatialAgent](https://github.co
 The same functions work in a notebook:
 
 ```python
-from spaceagent import load, tools
+from lightyear import load, tools
 s = load("stores/cuprizone")
 print(tools.compare_groups(s, "NoRecov_CupRap", "NoRecov_Cntl", cell_type="Microglia"))
 ```
 
 ## Limits (v0.4)
 
-- Dense gene-major store, which suits targeted panels (Xenium/MERSCOPE/CosMx). Whole-transcriptome data needs a sparse backend.
+- Gene-major store (dense or sparse CSC): fast per-gene queries; whole-matrix operations go gene by gene.
 - Expression is assumed to be log-normalised. Use `--layer` to choose another layer.
-- One store per server process.
+- One store per server process (one server per dataset); cross-dataset questions are answered by querying both.
 - The context model is linear in composition features (with square-root terms). It sees cell-type composition,
   not neighbours' expression states, and it is associational.
-- External knowledge (marker DBs, OmniPath ligand-receptor) is downloaded on first use to `~/.cache/spaceagent`.
+- External knowledge (marker DBs, OmniPath ligand-receptor) is downloaded on first use to `~/.cache/lightyear`.
 - `run_python` runs arbitrary code locally; nothing enforces aggregate-only output. Keep that in mind for human data.

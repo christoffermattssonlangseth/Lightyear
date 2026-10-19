@@ -1,13 +1,24 @@
 {
   "mcpServers": {
-    "spaceagent": {
+    "lightyear-cuprizone": {
       "command": "/Users/chrislangseth/miniforge3/bin/python",
       "args": [
         "-m",
-        "spaceagent.server"
+        "lightyear.server"
       ],
       "env": {
-        "SPACEAGENT_STORE": "/Users/chrislangseth/work/karolinska_institutet/projects/SpaceAgent/stores/cuprizone",
+        "LIGHTYEAR_STORE": "/Users/chrislangseth/work/karolinska_institutet/projects/SpaceAgent/stores/cuprizone",
+        "OPENBLAS_NUM_THREADS": "4"
+      }
+    },
+    "lightyear-rrmap2": {
+      "command": "/Users/chrislangseth/miniforge3/bin/python",
+      "args": [
+        "-m",
+        "lightyear.server"
+      ],
+      "env": {
+        "LIGHTYEAR_STORE": "/Users/chrislangseth/work/karolinska_institutet/projects/SpaceAgent/stores/rrmap2",
         "OPENBLAS_NUM_THREADS": "4"
       }
     }

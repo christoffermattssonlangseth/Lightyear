@@ -1,7 +1,7 @@
 """Query functions behind the MCP tools. Each returns small markdown and, where useful, a figure path.
 
 They are plain Python so they can also be used from a notebook:
-    from spaceagent import load, tools
+    from lightyear import load, tools
     s = load("stores/cuprizone"); print(tools.expression(s, ["Spp1"], by=["cell_type"]))
 """
 from __future__ import annotations
@@ -140,7 +140,7 @@ def distance(s: Store, source: dict, target: dict, by: str | None = None, max_um
     source/target are filter dicts, e.g. {"cell_type": "Microglia"} and {"cell_type": "Oligodendrocyte"}.
     """
     samp = s.role("sample")
-    sec = stats.codes_for(s.obs, [samp])[0]
+    sec = stats.codes_for(s.obs, [s.role("section")])[0]
     src, tgt = s.mask(source), s.mask(target)
     d = stats.distance_to(s.xy, sec, src, tgt)
     df = pd.DataFrame({"sample": s.obs[samp].astype(str).to_numpy()[src], "d": d[src]}).dropna()
@@ -159,7 +159,7 @@ def gene_spatial_association(s: Store, gene: str, near: dict, radius: float = 50
                              cells: dict | None = None, by: str | None = None) -> str:
     """Expression of `gene` in `cells` that are within `radius` of any `near` cell vs further away."""
     samp = s.role("sample")
-    sec = stats.codes_for(s.obs, [samp])[0]
+    sec = stats.codes_for(s.obs, [s.role("section")])[0]
     src, tgt = s.mask(cells), s.mask(near)
     d = stats.distance_to(s.xy, sec, src, tgt)
     v = s.gene(gene)
@@ -339,9 +339,10 @@ def case_control(s: Store, a: str, b: str, column: str | None = None, n_top: int
         g = pan["feature"].str.split(": ", n=1).str[1]
         summ = pan.assign(gene=g).groupby("gene").agg(n_celltypes=("source", "nunique"),
                                                        mean_effect=("effect", "mean"))
-        lines += ["## ⚠ Pan-cell-type shifts (likely spillover / ambient, excluded from rankings below)", "",
-                  "These genes move the same way in most cell types. Find the cell type where they truly change "
-                  "(largest effect, highest expression) and check with gene_near before calling them regulated.", "",
+        lines += ["## ⚠ Pan-cell-type shifts (excluded from rankings below)", "",
+                  "These genes move the same way in most cell types: spillover / ambient RNA, or a genuine "
+                  "tissue-wide response (e.g. interferon / MHC-I). Use test_claim per cell type to tell them apart "
+                  "before calling them regulated.", "",
                   _md_table(summ.sort_values("n_celltypes", ascending=False).round(3)), ""]
         meaningful = meaningful[~meaningful.pan_celltype]
     lines += ["## Strongest separating features overall", "", _md_table(meaningful[shown].head(n_top).set_index("feature"))]
@@ -380,6 +381,9 @@ def ligand_receptor(s: Store, sender: str | None = None, receiver: str | None = 
 VERDICT_NOTE = {
     "robust": "survived every attempt to break it",
     "fragile": "direction holds but at least one falsification test failed - qualify or drop",
+    "ambiguous": "consistent across animals, but the gene shifts in most cell types and this population is not "
+                 "its main expresser: ambient RNA or a genuine tissue-wide response. Resolve with prior "
+                 "knowledge (does this cell type transcribe the gene?) and state that basis",
     "underpowered": "fewer than 2 samples in a group - cannot be tested across replicates",
     "not_supported": "effect absent or below the minimum size",
     "refuted": "the data show the opposite direction",
@@ -460,9 +464,9 @@ def recheck_claims(s: Store, ids: list[str] | None = None, force: bool = False) 
 
 # -- context model -------------------------------------------------------------------------
 def fit_context_model(s: Store, name: str, groups: list[str] | None = None, cell_types: list[str] | None = None,
-                      max_cells: int = 60000) -> str:
+                      max_cells: int = 60000, genes: list[str] | None = None) -> str:
     from . import context
-    perf = context.fit(s, name, groups, cell_types, max_cells=max_cells, log=lambda *_: None)
+    perf = context.fit(s, name, groups, cell_types, max_cells=max_cells, log=lambda *_: None, genes=genes)
     m = context.ContextModel(s, name)
     p = perf[perf["mean"] >= 0.05]
     summ = p.groupby("cell_type").agg(n_train=("n_train", "first"), median_r2_context=("r2_context", "median"),
@@ -473,6 +477,8 @@ def fit_context_model(s: Store, name: str, groups: list[str] | None = None, cell
         f"# Context model `{name}`: neighbourhood composition (k={context.SCALES}) -> expression, per cell type",
         f"Trained on {len(m.meta['samples'])} samples ({', '.join(m.meta['samples'])}), cross-fitted by sample "
         f"({len(set(m.meta['fold_of'].values()))} folds): every number below is for animals the model never saw.",
+        f"Genes modelled: {len(m.meta['genes'])} of {len(s.genes)}"
+        + (" (most variable + requested; pass genes=[...] to add others)" if len(m.meta['genes']) < len(s.genes) else ""),
         "The condition is a covariate, so neighbourhood effects are learned within condition. r2_context = "
         "held-out per-cell variance explained beyond a condition-only model (single-cell counts are noisy: "
         "0.05-0.3 is substantial).", "",

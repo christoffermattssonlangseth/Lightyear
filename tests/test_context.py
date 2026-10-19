@@ -1,6 +1,6 @@
 import numpy as np
 
-from spaceagent import context
+from lightyear import context
 
 
 def test_context_model_recovers_planted_effect(toy):
@@ -27,7 +27,7 @@ def test_context_model_recovers_planted_effect(toy):
 
 
 def test_model_claims(toy):
-    from spaceagent import claims
+    from lightyear import claims
     _, s = toy
     if not (s.path / "models" / "toy_ctx").exists():
         context.fit(s, "toy_ctx", max_cells=4000, log=lambda *_: None)

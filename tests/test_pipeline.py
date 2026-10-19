@@ -3,7 +3,7 @@ import asyncio
 import numpy as np
 import pandas as pd
 
-from spaceagent import tools, plots
+from lightyear import tools, plots
 
 
 def test_roles_inferred(toy):
@@ -60,7 +60,7 @@ def test_plots(toy):
 
 def test_mcp_server(toy, monkeypatch):
     _, s = toy
-    from spaceagent import server
+    from lightyear import server
     monkeypatch.setattr(server, "STORE_PATH", str(s.path))
     monkeypatch.setattr(server, "_store", None)
     names = {t.name for t in asyncio.run(server.mcp.list_tools())}

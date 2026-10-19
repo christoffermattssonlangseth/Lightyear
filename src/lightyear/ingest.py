@@ -314,9 +314,11 @@ class CardBuilder:
                 hit = hit[hit >= min_share * n_ct].sort_values(ascending=False)
                 if len(hit):
                     genes = ", ".join(f"{g} ({k}/{n_ct})" for g, k in hit.items())
-                    msg = (f"{con}: {genes} {word} by ≥{min_delta} in most cell types - likely spillover / ambient "
-                           "signal from the cells that really change (check `gene_near` and the source cell type) "
-                           "rather than regulation in every cell type.")
+                    msg = (f"{con}: {genes} {word} by ≥{min_delta} in most cell types - either spillover / "
+                           "ambient signal from the cells that really change, or a genuine tissue-wide response "
+                           "(e.g. interferon / MHC-I in inflammation). Don't call these regulated in a given cell "
+                           "type without test_claim (its specificity test separates the two by expression level "
+                           "relative to the top expresser) or gene_near.")
                     out.append(f"- ⚠ {msg}")
                     self.caveats.append(msg)
         return [""] + out if out else []
@@ -343,10 +345,24 @@ def ingest(h5ad, out, config_path=None, layer=None, rebuild_store=False, k_neigh
     if rebuild_store or not (out / "meta.json").exists():
         log(f"building store {out} from {h5ad}")
         t0 = time.time()
-        store = build_store(h5ad, out, overrides=cfg, layer=layer, name=cfg.get("name"))
+        store = build_store(h5ad, out, overrides=cfg, layer=layer, name=cfg.get("name"), sparse=cfg.get("sparse"),
+                            log=log)
         log(f"  store built in {time.time() - t0:.0f}s")
     else:
         store = Store(out)
+        cols = store.meta["schema"]["columns"]  # apply config edits that don't need a rebuild
+        for col, role in cfg.get("column_roles", {}).items():
+            if col in cols:
+                cols[col]["role"] = role
+        for col, desc in cfg.get("descriptions", {}).items():
+            if col in cols:
+                cols[col]["description"] = desc
+        store.meta["dataset_description"] = cfg.get("description", store.meta.get("dataset_description", ""))
+        store.save_meta()
+        store = Store(out)
+    if cfg.get("exclude_cell_types"):
+        store.meta["exclude_cell_types"] = cfg["exclude_cell_types"]
+        store.save_meta()
     if cfg.get("organism"):
         store.meta["organism"] = cfg["organism"]
         store.save_meta()

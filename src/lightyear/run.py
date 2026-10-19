@@ -15,11 +15,11 @@ from pathlib import Path
 from .store import Store
 
 PRELUDE = '''\
-# --- spaceagent prelude (auto-generated) ---
+# --- lightyear prelude (auto-generated) ---
 import numpy as np, pandas as pd, matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from spaceagent import load, stats, spatial, analysis, tools, plots
+from lightyear import load, stats, spatial, analysis, tools, plots
 s = load({store!r})                    # Store: s.obs, s.xy, s.gene(name), s.mask(filters), s.knn, s.roles
 OUT = __import__("pathlib").Path({out!r})  # write tables/figures here
 pd.set_option("display.width", 200); pd.set_option("display.max_columns", 30)
@@ -27,7 +27,7 @@ pd.set_option("display.width", 200); pd.set_option("display.max_columns", 30)
 '''
 
 EPILOGUE = '''
-# --- spaceagent epilogue: save any open figures ---
+# --- lightyear epilogue: save any open figures ---
 for _i in plt.get_fignums():
     plt.figure(_i).savefig(OUT / f"fig{_i}.png", dpi=110, bbox_inches="tight")
 '''

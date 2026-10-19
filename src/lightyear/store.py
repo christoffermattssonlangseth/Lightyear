@@ -5,13 +5,14 @@ Layout of a store directory:
     obs.parquet      all cell-level metadata (categoricals preserved)
     spatial.npy      (n_cells, 2) float32 coordinates
     expr.npy         (n_genes, n_cells) float16, gene-major -> one gene is one contiguous read
+      or expr_csc/   indptr.npy (n_genes+1), indices.npy (int32 cell ids), data.npy (float16): sparse
+                     gene-major, used when the dense matrix would be too large (e.g. Xenium 5K)
     card/            dataset card + precomputed tables (written by ingest)
     findings.md      notes the agent accumulates across sessions
 
 Gene-major dense float16 keeps per-gene queries O(n_cells) with no sparse
-decoding; it is used for targeted panels (Xenium/MERSCOPE/CosMx, a few hundred
-to a few thousand genes). Whole-transcriptome data would need a sparse CSC
-variant (not implemented yet).
+decoding; it is used for targeted panels (a few hundred genes). Larger panels use
+the sparse CSC variant: still one contiguous slice per gene.
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ import pandas as pd
 from .schema import inspect_h5ad, read_spatial
 
 MAX_DENSE_ELEMENTS = 6e9  # ~12 GB at float16
+DENSE_BYTES_LIMIT = 4e9  # above this the store is written sparse (CSC) unless forced
 
 
 def _x_group(f: h5py.File, layer: str | None):
@@ -63,18 +65,59 @@ def _write_expr(path_h5ad, out: Path, n_cells: int, n_genes: int, layer: str | N
     del mm
 
 
+def _write_expr_csc(path_h5ad, out: Path, n_cells: int, n_genes: int, layer: str | None, chunk: int,
+                    log=print):
+    """CSR (cells x genes) in the h5ad -> gene-major CSC on disk, two passes over row chunks."""
+    d = out / "expr_csc"
+    d.mkdir(exist_ok=True)
+    with h5py.File(path_h5ad, "r") as f:
+        X = _x_group(f, layer)
+        enc = X.attrs.get("encoding-type", "array") if isinstance(X, h5py.Group) else "array"
+        enc = enc.decode() if isinstance(enc, bytes) else enc
+        if enc != "csr_matrix":
+            raise NotImplementedError(f"sparse store needs a CSR matrix, got {enc}")
+        indptr = X["indptr"][:].astype(np.int64)
+        nnz = int(indptr[-1])
+        counts = np.zeros(n_genes, np.int64)
+        for a in range(0, nnz, 200_000_000):
+            counts += np.bincount(X["indices"][a:a + 200_000_000], minlength=n_genes)
+        gptr = np.r_[0, np.cumsum(counts)]
+        np.save(d / "indptr.npy", gptr)
+        ind = np.lib.format.open_memmap(d / "indices.npy", "w+", np.int32, (nnz,))
+        dat = np.lib.format.open_memmap(d / "data.npy", "w+", np.float16, (nnz,))
+        cursor = gptr[:-1].copy()
+        for r0 in range(0, n_cells, chunk):
+            r1 = min(r0 + chunk, n_cells)
+            a, b = indptr[r0], indptr[r1]
+            g = X["indices"][a:b]
+            v = X["data"][a:b]
+            rows = np.repeat(np.arange(r0, r1, dtype=np.int32), np.diff(indptr[r0:r1 + 1]))
+            order = np.argsort(g, kind="stable")  # stable: cells stay ascending within each gene
+            g, v, rows = g[order], v[order], rows[order]
+            c = np.bincount(g, minlength=n_genes)
+            seg_start = np.r_[0, np.cumsum(c)[:-1]]
+            pos = cursor[g] + (np.arange(len(g)) - seg_start[g])
+            ind[pos] = rows
+            dat[pos] = v.astype(np.float16)
+            cursor += c
+            log(f"  expression: {r1:,}/{n_cells:,} cells")
+        ind.flush(); dat.flush()
+        del ind, dat
+    assert (cursor == gptr[1:]).all()
+
+
 def build_store(path_h5ad, out, overrides: dict | None = None, layer: str | None = None,
-                chunk: int = 100_000, name: str | None = None) -> "Store":
+                chunk: int = 100_000, name: str | None = None, sparse: bool | None = None, log=print) -> "Store":
     """Convert an .h5ad into a store directory. `overrides` comes from the dataset yaml."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     overrides = overrides or {}
     schema, obs = inspect_h5ad(path_h5ad, overrides)
 
-    if schema.n_cells * schema.n_genes > MAX_DENSE_ELEMENTS:
-        raise NotImplementedError(
-            f"{schema.n_cells} cells x {schema.n_genes} genes is too large for the dense store; "
-            "subset genes or add a sparse backend")
+    if sparse is None:
+        sparse = schema.n_cells * schema.n_genes * 2 > DENSE_BYTES_LIMIT
+    if not sparse and schema.n_cells * schema.n_genes > MAX_DENSE_ELEMENTS:
+        raise NotImplementedError(f"{schema.n_cells} cells x {schema.n_genes} genes is too large to store dense")
 
     obs = obs.copy()
     obs.index = obs.index.astype(str)
@@ -86,12 +129,16 @@ def build_store(path_h5ad, out, overrides: dict | None = None, layer: str | None
     xy, _ = read_spatial(path_h5ad, obs)
     np.save(out / "spatial.npy", xy)
 
-    _write_expr(path_h5ad, out, schema.n_cells, schema.n_genes, layer, chunk)
+    if sparse:
+        _write_expr_csc(path_h5ad, out, schema.n_cells, schema.n_genes, layer, min(chunk, 50_000), log)
+    else:
+        _write_expr(path_h5ad, out, schema.n_cells, schema.n_genes, layer, chunk)
 
     meta = {
         "name": name or Path(path_h5ad).stem,
         "source": str(Path(path_h5ad).resolve()),
         "expr_layer": layer or "X",
+        "expr_format": "csc" if sparse else "dense",
         "expr_description": overrides.get("expr_description", ""),
         "dataset_description": overrides.get("description", ""),
         "schema": schema.to_dict(),
@@ -140,10 +187,35 @@ class Store:
         return self._xy
 
     @property
-    def expr(self) -> np.ndarray:
+    def sparse(self) -> bool:
+        return self.meta.get("expr_format") == "csc"
+
+    @property
+    def expr(self):
+        """Dense: (n_genes, n_cells) memmap. Sparse: (indptr, indices, data) memmaps of the CSC store."""
         if self._expr is None:
-            self._expr = np.load(self.path / "expr.npy", mmap_mode="r")
+            if self.sparse:
+                d = self.path / "expr_csc"
+                self._expr = (np.load(d / "indptr.npy"), np.load(d / "indices.npy", mmap_mode="r"),
+                              np.load(d / "data.npy", mmap_mode="r"))
+            else:
+                self._expr = np.load(self.path / "expr.npy", mmap_mode="r")
         return self._expr
+
+    def gene_nz(self, g: str) -> tuple[np.ndarray, np.ndarray]:
+        """(cell indices, values) of the non-zero entries of a panel gene."""
+        g = self.resolve_gene(g)
+        if g not in self.gene_index:
+            v = self.gene(g)
+            nz = np.flatnonzero(v)
+            return nz, v[nz]
+        j = self.gene_index[g]
+        if self.sparse:
+            ptr, ind, dat = self.expr
+            return np.asarray(ind[ptr[j]:ptr[j + 1]]), np.asarray(dat[ptr[j]:ptr[j + 1]], np.float32)
+        v = np.asarray(self.expr[j], np.float32)
+        nz = np.flatnonzero(v)
+        return nz, v[nz]
 
     @property
     def knn(self) -> tuple[np.ndarray, np.ndarray]:
@@ -225,13 +297,19 @@ class Store:
 
     def gene(self, g: str, mask: np.ndarray | None = None) -> np.ndarray:
         g = self.resolve_gene(g)
-        if g in self.gene_index:
+        if g in self.gene_index and self.sparse:
+            idx, val = self.gene_nz(g)
+            v = np.zeros(self.n_cells, np.float32)
+            v[idx] = val
+        elif g in self.gene_index:
             v = np.asarray(self.expr[self.gene_index[g]], dtype=np.float32)
         else:
             v = self.obs[g].to_numpy(np.float32)
         return v if mask is None else v[mask]
 
     def role(self, r: str) -> str | None:
+        if r == "section":  # spatial unit (one coordinate frame / tissue piece); defaults to the sample
+            return self.roles.get("section") or self.roles.get("sample")
         return self.roles.get(r)
 
     def mask(self, filters: dict | None) -> np.ndarray:

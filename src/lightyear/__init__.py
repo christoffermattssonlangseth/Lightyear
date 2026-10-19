@@ -1,4 +1,4 @@
-"""SpaceAgent: learn a spatial omics dataset once, then query it through an agent."""
+"""Lightyear: learn a spatial omics dataset once, then query it through an agent."""
 from .store import Store, load, build_store
 from .ingest import ingest
 

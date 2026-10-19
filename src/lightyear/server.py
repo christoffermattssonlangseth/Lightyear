@@ -1,14 +1,16 @@
 """MCP server exposing one dataset store to an agent.
 
-    SPACEAGENT_STORE=stores/cuprizone python -m spaceagent.server
+    LIGHTYEAR_STORE=stores/cuprizone python -m lightyear.server
 
 Every tool returns aggregates (per group / per sample) or a rendered figure,
 never cell-level tables.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import Image, MCPServer
@@ -16,7 +18,7 @@ from mcp.server.mcpserver import Image, MCPServer
 from . import plots, tools
 from .store import Store
 
-STORE_PATH = os.environ.get("SPACEAGENT_STORE") or (sys.argv[1] if len(sys.argv) > 1 else None)
+STORE_PATH = os.environ.get("LIGHTYEAR_STORE") or (sys.argv[1] if len(sys.argv) > 1 else None)
 _store: Store | None = None
 
 
@@ -24,7 +26,7 @@ def S() -> Store:
     global _store
     if _store is None:
         if not STORE_PATH:
-            raise RuntimeError("set SPACEAGENT_STORE to a store directory")
+            raise RuntimeError("set LIGHTYEAR_STORE to a store directory")
         _store = Store(STORE_PATH)
     return _store
 
@@ -32,10 +34,19 @@ def S() -> Store:
 FILTERS_DOC = ("filters: {column: value | [values]} on obs columns; numeric columns take "
                "{column: {'>': x, '<=': y}}. Example: {'cell_type': 'Microglia', 'group': ['A','B']}.")
 
+def _dataset_line() -> str:
+    try:
+        meta = json.loads((Path(STORE_PATH) / "meta.json").read_text())
+        desc = (meta.get("dataset_description") or "").strip().splitlines()
+        return f"Dataset `{meta.get('name')}`: {desc[0] if desc else ''} "
+    except Exception:
+        return ""
+
+
 mcp = MCPServer(
-    name="spaceagent",
+    name="lightyear",
     instructions=(
-        "Tools over one spatial omics dataset. Start every session with dataset_card(), read_findings() and "
+        _dataset_line() + "Tools over this one spatial omics dataset. Start every session with dataset_card(), read_findings() and "
         "list_claims(). Before stating any condition or co-localisation claim, run test_claim on it. "
         "Use column names exactly as listed in the card. Treat samples (not cells) as replicates for any "
         "group comparison, and check the card's caveats (panel gaps, confounding) before concluding. "
@@ -259,11 +270,12 @@ def run_python(code: str, title: str = "analysis") -> list:
 # -- context model ----------------------------------------------------------------------
 @mcp.tool()
 def fit_context_model(name: str, groups: list[str] | None = None, cell_types: list[str] | None = None,
-                      max_cells: int = 60000) -> str:
+                      max_cells: int = 60000, genes: list[str] | None = None) -> str:
     """Learn, per cell type, how a cell's expression depends on its neighbourhood (cell-type composition of
     its 10 and 30 nearest neighbours). Cross-fitted by sample, so performance and every later prediction are
-    for unseen animals. Fit one model per experiment (groups = the groups of one batch). Takes 1-3 min."""
-    return tools.fit_context_model(S(), name, groups, cell_types, max_cells)
+    for unseen animals. Fit one model per experiment (groups = the groups of one batch). Large panels: the
+    1000 most variable genes plus `genes`. Takes 1-5 min."""
+    return tools.fit_context_model(S(), name, groups, cell_types, max_cells, genes)
 
 
 @mcp.tool()

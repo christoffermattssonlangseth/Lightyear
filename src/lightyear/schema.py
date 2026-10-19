@@ -165,6 +165,14 @@ def inspect_h5ad(path, overrides: dict | None = None) -> tuple[Schema, pd.DataFr
         structures = {k: list(f[k].keys()) for k in ("obsm", "layers", "uns") if k in f}
 
     obs = read_obs(path)
+    for name, spec in overrides.get("combine_columns", {}).items():
+        # e.g. cohort: {columns: [model, stage], map: {"RELAPSE REMITTING": RR}, sep: "_"}
+        vmap = spec.get("map", {})
+        parts = [obs[c].astype(str).map(lambda x: vmap.get(x, x)) for c in spec["columns"]]
+        val = parts[0]
+        for p in parts[1:]:
+            val = val + spec.get("sep", "_") + p
+        obs[name] = val.map(lambda x: spec.get("map", {}).get(x, x)).astype("category")
     col_desc.update(overrides.get("descriptions", {}))
 
     sample_col = overrides.get("roles", {}).get("sample")

@@ -5,7 +5,7 @@ import pytest
 import scipy.sparse as sp
 from scipy.spatial import cKDTree
 
-from spaceagent import ingest
+from lightyear import ingest
 
 
 @pytest.fixture(scope="module")
@@ -49,3 +49,31 @@ def toy(tmp_path_factory):
     cfg.write_text("contrasts:\n  - {column: group, a: treat, b: ctrl}\n")
     store = ingest(d / "toy.h5ad", d / "store", cfg, log=lambda *_: None)
     return a, store
+
+
+@pytest.fixture(scope="module")
+def toy_pieces(tmp_path_factory):
+    """Sparse store; 4 animals x 2 tissue pieces that share one coordinate frame (as when pieces of an animal
+    come from different sections). Piece P2 is all T cells, P1 all A cells: any neighbour or distance
+    computation that mixes pieces will find T next to A."""
+    rng = np.random.default_rng(1)
+    obs, xy, rows = [], [], []
+    for ai, (animal, grp) in enumerate([("a1", "ctrl"), ("a2", "ctrl"), ("a3", "treat"), ("a4", "treat")]):
+        for piece, ct in (("P1", "A"), ("P2", "T")):
+            n = 800
+            obs.append(pd.DataFrame({"animal": animal, "piece": f"{animal}_{piece}", "group": grp,
+                                     "cell_type": ct}, index=[f"{animal}{piece}{i}" for i in range(n)]))
+            xy.append(rng.uniform(0, 500, (n, 2)))
+            X = rng.poisson(0.1, (n, 50)).astype(float)
+            X[:, 0 if ct == "A" else 1] += 3
+            rows.append(np.log1p(X))
+    a = ad.AnnData(sp.csr_matrix(np.vstack(rows).astype(np.float32)), obs=pd.concat(obs),
+                   var=pd.DataFrame(index=["MarkA", "MarkT"] + [f"G{i}" for i in range(48)]))
+    for c in ("animal", "piece", "group", "cell_type"):
+        a.obs[c] = a.obs[c].astype("category")
+    a.obsm["spatial"] = np.vstack(xy)
+    d = tmp_path_factory.mktemp("pieces")
+    a.write_h5ad(d / "p.h5ad")
+    cfg = d / "cfg.yaml"
+    cfg.write_text("sparse: true\nroles: {sample: animal, section: piece, cell_type: cell_type, group: group}\n")
+    return a, ingest(d / "p.h5ad", d / "store", cfg, log=lambda *_: None)

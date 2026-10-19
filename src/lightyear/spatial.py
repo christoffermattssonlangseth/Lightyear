@@ -21,7 +21,7 @@ def ensure_knn(s: Store, k: int = K_STORED, log=print):
         idx = np.load(s.path / "knn_idx.npy", mmap_mode="r")
         if idx.shape[1] >= k:
             return
-    sections = stats.codes_for(s.obs, [s.role("sample")])[0]
+    sections = stats.codes_for(s.obs, [s.role("section")])[0]
     n = s.n_cells
     idx = np.lib.format.open_memmap(s.path / "knn_idx.npy", "w+", np.int32, (n, k))
     dist = np.lib.format.open_memmap(s.path / "knn_dist.npy", "w+", np.float16, (n, k))
@@ -191,29 +191,34 @@ def nhood_enrichment(s: Store, samples: list[str] | None = None, k: int = 10, n_
 
 def co_occurrence(s: Store, a: dict, b: dict, distances: list[float] | None = None,
                   samples: list[str] | None = None, max_cells: int = 20_000, seed: int = 0) -> pd.DataFrame:
-    """P(b within distance d of an a cell) / P(b in the section) for a range of distances (ratio > 1 =
-    co-occurrence). Per sample."""
+    """P(b within distance d of an a cell) / P(b in the sample) for a range of distances (ratio > 1 =
+    co-occurrence). Per sample; distances are only measured within a section (tissue piece)."""
     distances = distances or [10, 20, 30, 50, 75, 100, 150, 200, 300]
-    samp = s.role("sample")
-    smp = s.obs[samp].astype(str).to_numpy()
+    smp, secs = s.strcol(s.role("sample")), s.strcol(s.role("section"))
     ma, mb = s.mask(a), s.mask(b)
     rng = np.random.default_rng(seed)
     rows = []
     for sm in samples or sorted(set(smp[ma])):
-        sec = smp == sm
-        ia = np.flatnonzero(sec & ma)
-        if len(ia) == 0:
+        in_s = smp == sm
+        ia_all = np.flatnonzero(in_s & ma)
+        if len(ia_all) == 0:
             continue
-        ia = rng.choice(ia, min(len(ia), max_cells), replace=False)
-        tree_all = cKDTree(s.xy[sec])
-        tree_b = cKDTree(s.xy[sec & mb]) if (sec & mb).any() else None
-        p_b = (sec & mb).sum() / sec.sum()
-        for d in distances:
-            n_all = tree_all.query_ball_point(s.xy[ia], d, workers=-1, return_length=True) - 1
-            n_b = tree_b.query_ball_point(s.xy[ia], d, workers=-1, return_length=True) if tree_b else 0
-            n_b = n_b - mb[ia]  # don't count the centre cell itself
-            ratio = (n_b.sum() / max(n_all.sum(), 1)) / max(p_b, 1e-9)
-            rows.append((sm, d, float(ratio)))
+        ia_all = np.sort(rng.choice(ia_all, min(len(ia_all), max_cells), replace=False))
+        p_b = (in_s & mb).sum() / in_s.sum()
+        n_b_tot, n_all_tot = np.zeros(len(distances)), np.zeros(len(distances))
+        for se in np.unique(secs[ia_all]):
+            sec = in_s & (secs == se)
+            ia = ia_all[secs[ia_all] == se]
+            tree_all = cKDTree(s.xy[sec])
+            tree_b = cKDTree(s.xy[sec & mb]) if (sec & mb).any() else None
+            for i, d in enumerate(distances):
+                n_all = tree_all.query_ball_point(s.xy[ia], d, workers=-1, return_length=True) - 1
+                n_b = tree_b.query_ball_point(s.xy[ia], d, workers=-1, return_length=True) if tree_b else 0
+                n_b = n_b - mb[ia]  # don't count the centre cell itself
+                n_b_tot[i] += np.sum(n_b)
+                n_all_tot[i] += n_all.sum()
+        for i, d in enumerate(distances):
+            rows.append((sm, d, float((n_b_tot[i] / max(n_all_tot[i], 1)) / max(p_b, 1e-9))))
     return pd.DataFrame(rows, columns=["sample", "distance", "ratio"])
 
 
@@ -243,7 +248,7 @@ def gradient(s: Store, feature: str, target: dict, cells: dict | None = None,
     """Mean of a gene/score in `cells` as a function of distance to the nearest `target` cell."""
     bins = bins or [0, 25, 50, 100, 200, 400, 800, np.inf]
     samp = s.role("sample")
-    sec = stats.codes_for(s.obs, [samp])[0]
+    sec = stats.codes_for(s.obs, [s.role("section")])[0]
     src, tgt = s.mask(cells), s.mask(target)
     d = stats.distance_to(s.xy, sec, src & ~tgt, tgt)
     v = s.gene(feature)
