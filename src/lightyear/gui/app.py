@@ -151,7 +151,9 @@ def setup_save(body: dict):
     for prov, mode in (body.get("auth") or {}).items():
         if prov in ("claude", "codex") and mode in ("login", "api_key"):
             if prov == "claude" and mode == "login" and not auth.ALLOW_CLAUDE_LOGIN:
-                raise HTTPException(400, "Claude sign-in is not offered in the app; use an API key")
+                if s.provider == "claude":
+                    raise HTTPException(400, "Claude sign-in is not offered in the app; use an API key")
+                continue  # not the chosen provider: just don't store a mode the app can't use
             s.auth[prov] = mode
     for prov, model in (body.get("model") or {}).items():
         if prov in ("claude", "codex"):

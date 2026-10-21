@@ -88,3 +88,16 @@ def test_claude_login_refused_when_not_offered(fresh, monkeypatch):
     monkeypatch.setattr(auth, "ALLOW_CLAUDE_LOGIN", False)
     r = c.post("/api/setup", json={"provider": "claude", "auth": {"claude": "login"}})
     assert r.status_code == 400 and "API key" in r.json()["detail"]
+
+
+def test_codex_start_ignores_unusable_claude_mode(fresh, monkeypatch):
+    """Choosing Codex must work whatever the (hidden) Claude radio holds."""
+    c, _, _ = fresh
+    monkeypatch.setattr(auth, "ALLOW_CLAUDE_LOGIN", False)
+    r = c.post("/api/setup", json={"provider": "codex", "auth": {"claude": "login", "codex": "login"}})
+    assert r.status_code == 200, r.text
+    assert r.json()["provider"] == "codex" and r.json()["auth"]["claude"] == "api_key"
+
+
+def test_hidden_attribute_wins_over_css():
+    assert "[hidden] { display: none !important; }" in (gui.STATIC / "style.css").read_text()

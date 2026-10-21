@@ -101,6 +101,15 @@ def main():
             bad = pg.text_content("#setup-msg").strip()
             if bad:
                 fail(f"setup screen shows a message on open: {bad!r}")
+            # nothing marked hidden may show (a class display rule once revealed the disallowed Claude sign-in)
+            for prov in ("claude", "codex"):
+                pg.click(f"label.provider:has(input[value={prov}])")
+                shown = pg.evaluate("""[...document.querySelectorAll('#setupdlg [hidden]')]
+                    .filter(e => getComputedStyle(e).display !== 'none').map(e => e.id || e.className || e.tagName)""")
+                if shown:
+                    fail(f"hidden elements visible on the {prov} tab: {shown}")
+            if pg.is_visible("#claude-login-opt"):
+                fail("Claude sign-in is offered in the packaged app")
             pg.screenshot(path=str(tmp / "1_setup.png"))
 
             # 2. Start with every default as prefilled: must ask for the next step, not complain about folders
@@ -129,6 +138,8 @@ def main():
             if not codex_ok:
                 print("Codex not signed in on this machine: skipping the connect check")
             else:
+                pg.click("label.provider:has(input[value=claude])")
+                pg.click("label.opt:has(input[name=claude-auth][value=api_key])")
                 pg.click("label.provider:has(input[value=codex])")
                 pg.click("label.opt:has(input[name=codex-auth][value=login])")
                 pg.click("#setup-start")

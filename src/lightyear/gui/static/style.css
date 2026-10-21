@@ -3,6 +3,7 @@
   --accent: #5b4bd6; --accent-ink: #ffffff; --user: #eef0ff; --code: #f2f4f7;
   --robust: #12805c; --ambiguous: #b26a00; --fragile: #c4320a; --refuted: #9e1a1a; --neutral: #667085;
 }
+[hidden] { display: none !important; }  /* class display rules must not show hidden elements */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0f1218; --panel: #171b23; --ink: #e6e9ef; --muted: #98a2b3; --line: #2a303c;
