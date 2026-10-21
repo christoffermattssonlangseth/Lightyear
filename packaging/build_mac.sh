@@ -9,6 +9,8 @@
 #   mamba create -p build/env -c conda-forge python=3.10 numpy=1.26 scipy=1.11 scikit-learn pandas=2.1 \
 #         pyarrow matplotlib h5py anndata=0.11 pyyaml threadpoolctl
 #   build/env/bin/pip install -e ".[app]" pyinstaller
+# The first-run check (packaging/check_first_run.py) runs with CHECK_PY (default python3), which needs numpy,
+# anndata and playwright; SKIP_FIRST_RUN_CHECK=1 skips it (don't, for anything you hand out).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PY=${PY:-build/env/bin/python}
@@ -46,6 +48,14 @@ if [ -n "$SIGN_ID" ]; then
   codesign --force --timestamp --options runtime --entitlements packaging/entitlements.plist --sign "$SIGN_ID" "$APP"
   codesign --verify --deep --strict "$APP"
   echo "signed $(wc -l < build/macho.txt | tr -d ' ') libraries + app"
+fi
+
+# Release gate: the built (and signed) app must pass a brand-new-user run before anything is notarised.
+if [ -z "${SKIP_FIRST_RUN_CHECK:-}" ]; then
+  ${CHECK_PY:-python3} packaging/check_first_run.py "$APP"
+fi
+
+if [ -n "$SIGN_ID" ]; then
   if [ -n "$NOTARY_PROFILE" ]; then
     ditto -c -k --keepParent "$APP" build/Lightyear-notarise.zip
     notarise build/Lightyear-notarise.zip

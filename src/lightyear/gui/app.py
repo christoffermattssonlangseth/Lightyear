@@ -63,6 +63,11 @@ def index():
     return FileResponse(STATIC / "index.html")
 
 
+@app.get("/favicon.ico")
+def favicon():
+    return FileResponse(STATIC / "favicon.png", media_type="image/png")
+
+
 @app.get("/static/{name:path}")
 def static(name: str):
     p = (STATIC / name).resolve()
