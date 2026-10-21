@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lightyear"
-version = "0.1.0"
+version = "0.5.0"
 description = "Ingest a spatial omics dataset into a queryable store + dataset card, and expose it to an LLM agent via MCP"
 requires-python = ">=3.10"
 dependencies = [

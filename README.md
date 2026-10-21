@@ -12,8 +12,8 @@ stated.
 
 ## What it is
 
-Lightyear is **not a model of its own**: the reasoning is Claude. Lightyear gives Claude what it needs to be
-an expert on *one* dataset:
+Lightyear is **not a model of its own**: the reasoning is done by Claude or, in the app, optionally by OpenAI's
+Codex. Lightyear gives the model what it needs to be an expert on *one* dataset:
 
 | piece | what it does |
 |---|---|
@@ -25,7 +25,7 @@ an expert on *one* dataset:
 
 ```
                 ┌──────────── your Mac ─────────────────────────────────────┐
- question ──▶   │  Claude (Claude Code or `lightyear gui`)                   │
+ question ──▶   │  Claude or Codex (Claude Code, `lightyear gui`, the app)   │
                 │     │ plan → tool calls                                     │
                 │     ▼                                                       │
                 │  Lightyear MCP server ──▶ store/  (1–2 M cells, all genes) │
@@ -38,15 +38,20 @@ an expert on *one* dataset:
 
 ## Quick start
 
+**Desktop app (macOS):** build `Lightyear.app` and a `.dmg` with `packaging/build_mac.sh` (see
+[Desktop app](#desktop-app)). Drag it to Applications, open it, pick Claude or Codex on the setup screen.
+
+**From source:**
+
 ```bash
-pip install -e '.[gui,test]'
+pip install -e '.[gui,test]'          # '.[app]' adds the native window (pywebview)
 
 # 1. learn a dataset (check the inferred roles first)
 lightyear inspect data.h5ad
 lightyear ingest data.h5ad stores/<name> --config configs/<name>.yaml
 
 # 2a. chat in the browser (all stores under stores/)
-lightyear gui                       # http://127.0.0.1:8790
+lightyear gui                       # http://127.0.0.1:8790   (--window: native window)
 
 # 2b. or use Claude Code: each store has an MCP server in .mcp.json
 claude                              # in this folder; approve the lightyear-* servers
@@ -54,8 +59,39 @@ claude                              # in this folder; approve the lightyear-* se
 
 The chat app streams the agent's text, every tool call (inputs and outputs, collapsible) and the figures,
 with side panels for the claims ledger (verdict badges; click a claim for its tests, per-animal values and
-figure), the findings log and the dataset card. Each chat is a Claude Agent SDK session using your Claude
-Code login, and its only tools are the Lightyear tools for that dataset (no shell, no file access).
+figure), the findings log and the dataset card. Its only tools are the Lightyear tools for that dataset (no
+shell, no file access), whichever model is behind it.
+
+### Choosing the model (setup screen)
+
+The first start opens a setup screen (later: the ⚙ button). Settings live in
+`~/Library/Application Support/Lightyear/settings.json`; API keys go to the macOS Keychain.
+
+| provider | sign-in options | how it runs |
+|---|---|---|
+| **Claude** | Anthropic API key (checked against the Anthropic API before saving). When running from source, also your existing Claude Code sign-in. | Claude Agent SDK, with the Lightyear MCP server as its only tools |
+| **Codex** | your Codex CLI sign-in (`codex login`: ChatGPT plan or key), or an OpenAI API key | `codex exec --json`, resumed per chat, with shell, apps, plugins, web search and image tools switched off and a read-only sandbox |
+
+Anthropic does not allow third-party apps built on the Agent SDK to offer claude.ai sign-in, so the packaged app
+is API-key only for Claude (`LIGHTYEAR_ALLOW_CLAUDE_LOGIN=1` overrides this for your own use). Codex needs the
+Codex CLI installed (`npm i -g @openai/codex` or `brew install codex`); the app reuses its sign-in rather than
+signing in itself. Codex sessions are saved in `~/.codex/sessions` like any other Codex run.
+
+### Desktop app
+
+```bash
+mamba create -p build/env -c conda-forge python=3.10 numpy=1.26 scipy=1.11 scikit-learn pandas=2.1 \
+      pyarrow matplotlib h5py anndata=0.11 pyyaml threadpoolctl
+build/env/bin/pip install -e '.[app]' pyinstaller
+packaging/build_mac.sh            # -> dist/Lightyear.app, dist/Lightyear-<version>-macos-arm64.dmg
+```
+
+The app (about 550 MB, a 250 MB `.dmg`) bundles Python, the scientific stack, Lightyear and the Claude Code
+binary that the Agent SDK drives. Double-clicked, it opens the chat in its own window. Datasets are read
+from `~/Lightyear/stores` (changeable on the setup screen); the binary is also the full CLI
+(`Lightyear.app/Contents/MacOS/Lightyear ingest …`). It is ad-hoc signed, not notarised: the first time, open it
+with right-click → Open (or System Settings → Privacy & Security → Open Anyway). Use conda-forge builds for
+the environment: pip's SciPy wheels currently fail to load on recent macOS.
 
 ## The claims ledger: conclusions that survived an attempt to break them
 
@@ -194,7 +230,8 @@ stores/<name>/
 ## Privacy
 
 Tools return aggregates (per animal, group or cell type) and figures, never cell-level tables, so the design
-also works for human data where only aggregates may leave the machine. `run_python` is the exception: it runs
+also works for human data where only aggregates may leave the machine. That holds for both providers; for
+human data the provider choice decides whose data-processing terms apply. `run_python` is the exception: it runs
 arbitrary local code and nothing enforces aggregate-only output. Disable it or review its scripts for human
 datasets.
 
@@ -206,6 +243,10 @@ datasets.
   but not their states, and is associational.
 - For panels larger than 1000 genes, the context model fits the 1000 most variable genes plus any requested.
 - Chat history in the app is not saved between page reloads (claims and findings are).
+- With Codex, answers arrive per message rather than streamed token by token; the app relies on a Codex
+  feature flag (`mcp_2026_07_28`) for current MCP servers, which may change between Codex versions.
+- `run_python` in the packaged app can import only what is bundled (NumPy, pandas, SciPy, scikit-learn,
+  Matplotlib, AnnData and Lightyear).
 - Marker databases and OmniPath ligand–receptor pairs are downloaded on first use to `~/.cache/lightyear`.
 
 ## Development

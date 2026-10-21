@@ -12,3 +12,7 @@ questions about it through MCP tools (`src/lightyear/server.py`, registered in `
 - Tests: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q` (the base env's napari pytest plugin is broken).
 - Tools must return aggregates (per group/sample) or figures, never cell-level tables - the same design
   must work later on human/GDPR datasets where only aggregates may leave the machine.
+- The query skill's source is `src/lightyear/skill.md` (the `.claude/skills/query-dataset/SKILL.md` is a symlink);
+  the chat app uses the same text as its system prompt.
+- Chat app back ends: `src/lightyear/gui/runners.py` (Claude Agent SDK, Codex CLI). Desktop app:
+  `packaging/build_mac.sh` with the conda-forge env in `build/env` (pip SciPy wheels fail to load on this macOS).
