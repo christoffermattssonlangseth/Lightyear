@@ -84,14 +84,19 @@ mamba create -p build/env -c conda-forge python=3.10 numpy=1.26 scipy=1.11 sciki
       pyarrow matplotlib h5py anndata=0.11 pyyaml threadpoolctl
 build/env/bin/pip install -e '.[app]' pyinstaller
 packaging/build_mac.sh            # -> dist/Lightyear.app, dist/Lightyear-<version>-macos-arm64.dmg
+
+# signed + notarised (Developer ID; notary profile created once with `xcrun notarytool store-credentials`)
+SIGN_ID="Developer ID Application: …" NOTARY_PROFILE=lightyear-notary packaging/build_mac.sh
 ```
 
 The app (about 550 MB, a 250 MB `.dmg`) bundles Python, the scientific stack, Lightyear and the Claude Code
 binary that the Agent SDK drives. Double-clicked, it opens the chat in its own window. Datasets are read
 from `~/Lightyear/stores` (changeable on the setup screen); the binary is also the full CLI
-(`Lightyear.app/Contents/MacOS/Lightyear ingest …`). It is ad-hoc signed, not notarised: the first time, open it
-with right-click → Open (or System Settings → Privacy & Security → Open Anyway). Use conda-forge builds for
-the environment: pip's SciPy wheels currently fail to load on recent macOS.
+(`Lightyear.app/Contents/MacOS/Lightyear ingest …`). With `SIGN_ID` every library is signed with the hardened
+runtime (the bundled Claude Code binary keeps Anthropic's own signature); with `NOTARY_PROFILE` the app and
+the `.dmg` are notarised and stapled, so they open without Gatekeeper warnings. Unsigned builds need
+right-click → Open the first time. Use conda-forge builds for the environment: pip's SciPy wheels currently
+fail to load on recent macOS.
 
 ## The claims ledger: conclusions that survived an attempt to break them
 

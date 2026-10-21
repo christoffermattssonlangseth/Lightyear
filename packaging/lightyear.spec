@@ -23,7 +23,7 @@ pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="Lightyear", console=False, argv_emulation=False,
           codesign_identity=None, entitlements_file=None)
 coll = COLLECT(exe, a.binaries, a.datas, name="Lightyear")
-app = BUNDLE(coll, name="Lightyear.app", icon="Lightyear.icns", bundle_identifier="org.lightyear.app",
+app = BUNDLE(coll, name="Lightyear.app", icon="Lightyear.icns", bundle_identifier="io.github.christoffermattssonlangseth.lightyear",
              version=VERSION,
              info_plist={"CFBundleShortVersionString": VERSION, "NSHighResolutionCapable": True,
                          "LSMinimumSystemVersion": "12.0", "NSRequiresAquaSystemAppearance": False})
