@@ -1,10 +1,11 @@
 """Lightyear local chat app.
 
-    lightyear gui [--stores stores] [--port 8765]
+    lightyear gui [--stores DIR] [--port 8790]
 
-A FastAPI server on localhost. Each browser chat is one Claude Agent SDK session whose only tools are the
-Lightyear MCP tools for the chosen dataset (no shell, no file access), so the agent sees exactly what it
-sees in Claude Code: aggregates and figures computed locally. Uses the local Claude Code login.
+A FastAPI server on localhost. Each browser chat is one agent session (Claude via the Agent SDK, or Codex via
+its CLI) whose only tools are the Lightyear MCP tools for the chosen dataset (no shell, no file access), so the
+model sees exactly what it sees in Claude Code: aggregates and figures computed locally. The first run shows a
+setup screen to pick the provider and sign in (see auth.py for what is offered and why).
 """
 from __future__ import annotations
 
@@ -12,33 +13,47 @@ import asyncio
 import base64
 import json
 import os
-import re
-import sys
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 
 from .. import tools
 from ..claims import fingerprint, load_ledger
+from ..runtime import FROZEN
 from ..store import Store
+from . import auth
+from .runners import make_runner
+from .settings import Settings, set_key
 
 STATIC = Path(__file__).parent / "static"
-SKILL = Path(__file__).resolve().parents[3] / ".claude" / "skills" / "query-dataset" / "SKILL.md"
-LEDGER_TOOLS = {"test_claim", "recheck_claims"}
+LEDGER_TOOLS = {"test_claim", "recheck_claims", "add_finding"}
+DEFAULT_STORES = Path.home() / "Lightyear" / "stores" if FROZEN else Path("stores")
 
 app = FastAPI(title="Lightyear")
-STORES: dict[str, Path] = {}
+STORES_OVERRIDE: Path | None = None   # --stores on the command line wins over the settings
+
+
+def stores_root() -> Path:
+    if STORES_OVERRIDE:
+        return STORES_OVERRIDE
+    s = Settings.load()
+    return Path(s.stores_dir) if s.stores_dir else DEFAULT_STORES.resolve()
 
 
 def discover(root: Path) -> dict[str, Path]:
     return {p.parent.name: p.parent.resolve() for p in sorted(Path(root).glob("*/meta.json"))}
 
 
+def _stores() -> dict[str, Path]:
+    return discover(stores_root())
+
+
 def _store(ds: str) -> Store:
-    if ds not in STORES:
+    stores = _stores()
+    if ds not in stores:
         raise HTTPException(404, f"unknown dataset {ds!r}")
-    return Store(STORES[ds])
+    return Store(stores[ds])
 
 
 # -- read-only API -------------------------------------------------------------------
@@ -47,10 +62,10 @@ def index():
     return FileResponse(STATIC / "index.html")
 
 
-@app.get("/static/{name}")
+@app.get("/static/{name:path}")
 def static(name: str):
     p = (STATIC / name).resolve()
-    if p.parent != STATIC.resolve() or not p.exists():
+    if not p.is_relative_to(STATIC.resolve()) or not p.is_file():
         raise HTTPException(404)
     return FileResponse(p)
 
@@ -58,7 +73,7 @@ def static(name: str):
 @app.get("/api/datasets")
 def datasets():
     out = []
-    for ds, path in STORES.items():
+    for ds, path in _stores().items():
         meta = json.loads((path / "meta.json").read_text())
         desc = (meta.get("dataset_description") or "").strip()
         sch = meta["schema"]
@@ -102,97 +117,93 @@ def card(ds: str):
     return {"markdown": tools.card(_store(ds))}
 
 
+# -- setup: model provider, sign-in, keys ---------------------------------------------------
+@app.get("/api/setup")
+def setup_status():
+    st = auth.status()
+    st["stores_dir"] = str(stores_root())
+    st["frozen"] = FROZEN
+    return st
+
+
+@app.post("/api/setup")
+def setup_save(body: dict):
+    s = Settings.load()
+    if body.get("provider") in ("claude", "codex"):
+        s.provider = body["provider"]
+    for prov, mode in (body.get("auth") or {}).items():
+        if prov in ("claude", "codex") and mode in ("login", "api_key"):
+            if prov == "claude" and mode == "login" and not auth.ALLOW_CLAUDE_LOGIN:
+                raise HTTPException(400, "Claude sign-in is not offered in the app; use an API key")
+            s.auth[prov] = mode
+    for prov, model in (body.get("model") or {}).items():
+        if prov in ("claude", "codex"):
+            s.model[prov] = (model or "").strip() or None
+    if "stores_dir" in body and not STORES_OVERRIDE:
+        d = Path(os.path.expanduser(body["stores_dir"] or "")).resolve()
+        if not d.is_dir():
+            raise HTTPException(400, f"not a folder: {d}")
+        s.stores_dir = str(d)
+    s.save()
+    return setup_status()
+
+
+@app.post("/api/setup/key")
+def setup_key(body: dict):
+    prov, key = body.get("provider"), (body.get("key") or "").strip()
+    if prov not in ("claude", "codex") or not key:
+        raise HTTPException(400, "provider and key required")
+    ok, detail = auth.validate_key(prov, key)
+    if not ok:
+        return {"ok": False, "detail": detail}
+    where = set_key(prov, key)
+    return {"ok": True, "detail": f"{detail}; saved to {where}"}
+
+
+@app.delete("/api/setup/key/{prov}")
+def setup_key_delete(prov: str):
+    if prov not in ("claude", "codex"):
+        raise HTTPException(404)
+    set_key(prov, None)
+    return setup_status()
+
+
 # -- agent session ---------------------------------------------------------------------
-def system_prompt(ds: str) -> str:
-    meta = json.loads((STORES[ds] / "meta.json").read_text())
-    skill = SKILL.read_text() if SKILL.exists() else ""
-    skill = re.sub(r"^---.*?---\s*", "", skill, flags=re.S)  # drop front matter
-    return "\n\n".join([
-        f"You are Lightyear, an agent that knows the spatial omics dataset `{meta.get('name', ds)}` and answers "
-        "questions about it in a local web app. Your only tools are the Lightyear tools (mcp__lightyear__*); "
-        "they compute on the full data locally and return aggregates and figures. Figures returned by tools are "
-        "shown to the user automatically - refer to them, don't describe how to open them. Answer in Markdown; "
-        "keep answers focused; italicise mouse gene symbols.",
-        f"Dataset description:\n{meta.get('dataset_description', '')}",
-        "How to work:\n" + skill])
-
-
-def agent_options(ds: str):
-    from claude_agent_sdk import ClaudeAgentOptions
-    env = {"LIGHTYEAR_STORE": str(STORES[ds]), "OPENBLAS_NUM_THREADS": "4"}
-    return ClaudeAgentOptions(
-        mcp_servers={"lightyear": {"type": "stdio", "command": sys.executable, "args": ["-m", "lightyear.server"],
-                                   "env": env}},
-        tools=[], allowed_tools=["mcp__lightyear"], setting_sources=[], strict_mcp_config=True,
-        system_prompt=system_prompt(ds), cwd=str(STORES[ds]), include_partial_messages=True, max_turns=60)
-
-
-def _tool_result_payload(block) -> dict:
-    content = block.content if isinstance(block.content, list) else [block.content]
-    texts, images = [], []
-    for c in content:
-        if isinstance(c, dict) and c.get("type") == "image":
-            src = c.get("source") or {}
-            images.append(src.get("data") or c.get("data"))
-        elif isinstance(c, dict) and c.get("type") == "text":
-            texts.append(c.get("text", ""))
-        elif isinstance(c, str):
-            texts.append(c)
-    text = "\n".join(texts)
-    try:  # str-returning tools arrive as structured {"result": "..."}
-        obj = json.loads(text)
-        if isinstance(obj, dict) and set(obj) == {"result"} and isinstance(obj["result"], str):
-            text = obj["result"]
-    except ValueError:
-        pass
-    return {"text": text, "images": [i for i in images if i], "is_error": bool(block.is_error)}
-
-
 @app.websocket("/ws/{ds}")
 async def chat(ws: WebSocket, ds: str):
-    from claude_agent_sdk import (AssistantMessage, ClaudeSDKClient, ResultMessage, StreamEvent, TextBlock,
-                                  ToolResultBlock, ToolUseBlock, UserMessage)
     await ws.accept()
-    if ds not in STORES:
+    stores = _stores()
+    settings = Settings.load()
+    if ds not in stores:
         await ws.send_json({"type": "error", "text": f"unknown dataset {ds!r}"})
         await ws.close()
         return
-    client = ClaudeSDKClient(options=agent_options(ds))
-    await client.connect()
-    tool_names: dict[str, str] = {}
-    busy = asyncio.Lock()
+    if not auth.ready(settings, auth.status(settings)):
+        await ws.send_json({"type": "setup_needed"})
+        await ws.close()
+        return
+    try:
+        runner = make_runner(stores[ds], settings)
+        await runner.start()
+    except Exception as e:
+        await ws.send_json({"type": "error", "text": f"could not start {settings.provider}: {e}"})
+        await ws.close()
+        return
+
+    async def emit(ev: dict):
+        await ws.send_json(ev)
+        if ev["type"] == "tool_result" and ev.get("name") in LEDGER_TOOLS:
+            await ws.send_json({"type": "ledger_changed"})
 
     async def run(text: str):
-        async with busy:
-            await client.query(text)
-            async for m in client.receive_response():
-                if isinstance(m, StreamEvent):
-                    ev = m.event
-                    if ev.get("type") == "content_block_delta" and ev.get("delta", {}).get("type") == "text_delta":
-                        await ws.send_json({"type": "delta", "text": ev["delta"]["text"]})
-                elif isinstance(m, AssistantMessage):
-                    for b in m.content:
-                        if isinstance(b, TextBlock):
-                            await ws.send_json({"type": "text", "text": b.text})
-                        elif isinstance(b, ToolUseBlock):
-                            name = b.name.split("__")[-1]
-                            tool_names[b.id] = name
-                            await ws.send_json({"type": "tool_use", "id": b.id, "name": name, "input": b.input})
-                elif isinstance(m, UserMessage) and isinstance(m.content, list):
-                    for b in m.content:
-                        if isinstance(b, ToolResultBlock):
-                            name = tool_names.get(b.tool_use_id, "")
-                            await ws.send_json({"type": "tool_result", "id": b.tool_use_id, "name": name,
-                                                **_tool_result_payload(b)})
-                            if name in LEDGER_TOOLS or name == "add_finding":
-                                await ws.send_json({"type": "ledger_changed"})
-                elif isinstance(m, ResultMessage):
-                    await ws.send_json({"type": "done", "turns": m.num_turns, "duration_s": m.duration_ms / 1000,
-                                        "cost_usd": m.total_cost_usd, "is_error": m.is_error})
+        try:
+            await runner.ask(text, emit)
+        except Exception as e:
+            await ws.send_json({"type": "error", "text": f"{type(e).__name__}: {e}"})
 
     task = None
     try:
-        await ws.send_json({"type": "ready"})
+        await ws.send_json({"type": "ready", "provider": settings.provider})
         while True:
             msg = await ws.receive_json()
             if msg.get("type") == "ask" and msg.get("text", "").strip():
@@ -200,16 +211,14 @@ async def chat(ws: WebSocket, ds: str):
                     await ws.send_json({"type": "error", "text": "still working on the previous question"})
                     continue
                 task = asyncio.create_task(run(msg["text"]))
-                task.add_done_callback(lambda t: t.exception() and asyncio.ensure_future(
-                    ws.send_json({"type": "error", "text": f"{type(t.exception()).__name__}: {t.exception()}"})))
             elif msg.get("type") == "interrupt":
-                await client.interrupt()
+                await runner.interrupt()
     except WebSocketDisconnect:
         pass
     finally:
         if task and not task.done():
             task.cancel()
-        await client.disconnect()
+        await runner.close()
 
 
 def _free_port(host: str, port: int) -> int:
@@ -221,15 +230,33 @@ def _free_port(host: str, port: int) -> int:
     raise SystemExit(f"no free port in {port}-{port + 29}")
 
 
-def main(stores: str = "stores", host: str = "127.0.0.1", port: int = 8790, open_browser: bool = True):
+def main(stores: str | None = None, host: str = "127.0.0.1", port: int = 8790, open_browser: bool = True,
+         window: bool = False):
+    """Serve the app. window=True opens it in a native window (pywebview) and quits when that closes."""
+    import threading
     import uvicorn
+    global STORES_OVERRIDE
     port = _free_port(host, port)
-    STORES.update(discover(Path(stores)))
-    if not STORES:
-        raise SystemExit(f"no stores found under {stores}/ (expected */meta.json)")
-    print(f"Lightyear: {', '.join(STORES)} -> http://{host}:{port}")
-    if open_browser:
-        import threading
-        import webbrowser
-        threading.Timer(1.5, lambda: webbrowser.open(f"http://{host}:{port}")).start()
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    if stores:
+        STORES_OVERRIDE = Path(stores).resolve()
+    url = f"http://{host}:{port}"
+    print(f"Lightyear: datasets in {stores_root()} -> {url}")
+    if window:
+        try:
+            import webview
+        except ImportError:
+            window = False
+    if not window:
+        if open_browser:
+            import webbrowser
+            threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+        uvicorn.run(app, host=host, port=port, log_level="warning")
+        return
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))
+    threading.Thread(target=server.run, daemon=True).start()
+    import time
+    while not server.started:
+        time.sleep(0.05)
+    webview.create_window("Lightyear", url, width=1360, height=900, min_size=(760, 560))
+    webview.start()
+    server.should_exit = True

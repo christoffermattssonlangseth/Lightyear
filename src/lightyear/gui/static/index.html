@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Lightyear</title>
   <link rel="stylesheet" href="/static/style.css">
-  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/purify.min.js"></script>
 </head>
 <body>
   <header>
@@ -17,6 +17,7 @@
     <div class="controls">
       <select id="dataset" aria-label="dataset"></select>
       <button id="newchat" title="Start a new conversation">New chat</button>
+      <button id="settings" title="Model provider, sign-in and datasets folder">⚙ <span id="provider-label">Setup</span></button>
       <span id="status" class="status">connecting…</span>
     </div>
   </header>
@@ -52,6 +53,59 @@
   <dialog id="claimdlg">
     <button class="close" onclick="this.closest('dialog').close()">×</button>
     <div id="claimbody" class="md"></div>
+  </dialog>
+
+  <dialog id="setupdlg">
+    <button class="close" id="setup-close" hidden>×</button>
+    <h2>Set up Lightyear</h2>
+    <p class="muted">Pick the model that does the reasoning. Whichever you choose, it only ever receives what
+      the Lightyear tools return - per-sample and per-group summaries and figures computed on this computer -
+      never the expression matrix or cell coordinates.</p>
+
+    <div class="providers">
+      <label class="provider"><input type="radio" name="provider" value="claude">
+        <b>Claude</b><span>Anthropic</span></label>
+      <label class="provider"><input type="radio" name="provider" value="codex">
+        <b>Codex</b><span>OpenAI</span></label>
+    </div>
+
+    <section class="pp" data-for="claude" hidden>
+      <label class="opt" id="claude-login-opt"><input type="radio" name="claude-auth" value="login">
+        <span><b>Use my Claude Code sign-in</b><small id="claude-login-detail"></small></span></label>
+      <label class="opt"><input type="radio" name="claude-auth" value="api_key">
+        <span><b>Anthropic API key</b><small>From console.anthropic.com → API keys. Billed to that account.</small></span></label>
+      <div class="keyrow" data-key="claude">
+        <span class="current"></span>
+        <input type="password" placeholder="sk-ant-…" autocomplete="off">
+        <button class="savekey">Verify &amp; save</button><button class="delkey" hidden>Remove</button>
+      </div>
+    </section>
+
+    <section class="pp" data-for="codex" hidden>
+      <p class="warn" id="codex-missing" hidden>The Codex CLI isn't installed. Install it with
+        <code>npm install -g @openai/codex</code> (or <code>brew install codex</code>), then press <i>Check again</i>.</p>
+      <label class="opt"><input type="radio" name="codex-auth" value="login">
+        <span><b>Use my Codex sign-in</b><small id="codex-login-detail"></small></span></label>
+      <label class="opt"><input type="radio" name="codex-auth" value="api_key">
+        <span><b>OpenAI API key</b><small>From platform.openai.com → API keys. Billed to that account.</small></span></label>
+      <div class="keyrow" data-key="codex">
+        <span class="current"></span>
+        <input type="password" placeholder="sk-…" autocomplete="off">
+        <button class="savekey">Verify &amp; save</button><button class="delkey" hidden>Remove</button>
+      </div>
+    </section>
+
+    <details class="advanced"><summary>Advanced</summary>
+      <label class="field">Model (optional) <input id="model" placeholder="provider default"></label>
+      <label class="field">Datasets folder <input id="stores-dir" placeholder="~/Lightyear/stores"></label>
+      <small class="muted">Each dataset is a store folder made with <code>lightyear ingest</code>.</small>
+    </details>
+
+    <p id="setup-msg" class="msgline"></p>
+    <div class="actions">
+      <button id="setup-recheck">Check again</button>
+      <button id="setup-start" class="primary">Start</button>
+    </div>
   </dialog>
 
   <script src="/static/app.js"></script>

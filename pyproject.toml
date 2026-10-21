@@ -23,7 +23,8 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest"]
-gui = ["claude-agent-sdk", "fastapi", "uvicorn[standard]"]
+gui = ["claude-agent-sdk", "fastapi", "uvicorn[standard]", "httpx", "keyring"]
+app = ["lightyear[gui]", "pywebview"]
 
 [project.scripts]
 lightyear = "lightyear.cli:main"
@@ -32,7 +33,7 @@ lightyear = "lightyear.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-lightyear = ["gui/static/*"]
+lightyear = ["skill.md", "gui/static/*", "gui/static/vendor/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -8,10 +8,10 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import sys
 import time
 from pathlib import Path
 
+from .runtime import python_cmd
 from .store import Store
 
 PRELUDE = '''\
@@ -45,7 +45,7 @@ def run_python(s: Store, code: str, title: str = "analysis", timeout: int = 900,
                       + code.strip() + "\n" + EPILOGUE)
     t0 = time.time()
     try:
-        r = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=timeout,
+        r = subprocess.run([*python_cmd(), str(script)], capture_output=True, text=True, timeout=timeout,
                            cwd=out, env={"OPENBLAS_NUM_THREADS": "4", **os.environ})
         text, ok = r.stdout + (("\n[stderr]\n" + r.stderr[-4000:]) if r.returncode else ""), r.returncode == 0
     except subprocess.TimeoutExpired as e:
