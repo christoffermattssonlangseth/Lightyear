@@ -60,7 +60,7 @@ def main():
     if args.app == "source":
         launch = [sys.executable, "-m", "lightyear.cli"]
     else:
-        binary = Path(args.app) / "Contents" / "MacOS" / "Lightyear"
+        binary = Path(args.app).resolve() / "Contents" / "MacOS" / "Lightyear"
         if not binary.exists():
             fail(f"no app binary at {binary}")
         launch = [str(binary)]
