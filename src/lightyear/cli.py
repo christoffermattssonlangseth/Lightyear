@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 
 from .ingest import ingest, load_config
 from .schema import inspect_h5ad
@@ -45,6 +46,7 @@ def main(argv=None):
                           "columns": {k: f"{v.role}/{v.level} ({v.n_unique})" for k, v in schema.columns.items()}},
                          indent=1))
     elif args.cmd == "ingest":
+        sys.stdout.reconfigure(line_buffering=True)  # the app shows the progress lines as they come
         ingest(args.h5ad, args.store, args.config, args.layer, args.rebuild_store, args.k)
     elif args.cmd == "serve":
         store = args.store or os.environ.get("LIGHTYEAR_STORE")
@@ -59,7 +61,6 @@ def main(argv=None):
         gui_main(args.stores, port=args.port, open_browser=not args.no_browser, window=args.window)
     elif args.cmd == "run-script":
         import runpy
-        import sys
         sys.argv = [args.script]
         runpy.run_path(args.script, run_name="__main__")
 

@@ -192,7 +192,7 @@ function wireSetup() {
     if (!setup.ready) return setupMsg(prov === "codex" && !setup.codex.installed ? "Install the Codex CLI first."
       : radio(`${prov}-auth`) === "api_key" ? "Save a working API key first." : "Not signed in yet - see the note above.", false);
     datasets = await getJSON("/api/datasets");
-    if (!datasets.length) { showFolder(); return setupMsg(`No datasets in ${setup.stores_dir} yet. Choose the folder that holds your dataset stores (each made with lightyear ingest).`, false); }
+    if (!datasets.length) return setupMsg(`No datasets in ${setup.stores_dir} yet: drop an .h5ad file on this window or press Add dataset…, or under Advanced choose a folder that already holds Lightyear datasets.`, false);
     dlg.close();
     fillDatasets();
   };
@@ -240,8 +240,130 @@ function fillDatasets() {
   selectDataset(first);
 }
 
+// -- add a dataset: inspect the .h5ad, confirm the columns, run ingest locally --------------------
+let ingestInfo = null, ingestTimer = null;
+const ingMsg = (text, ok) => { const el = $("#ing-msg"); el.textContent = text; el.className = "msgline " + (ok ? "ok" : "bad"); };
+
+async function openIngest() {
+  $("#ing-pick").hidden = !setup?.can_pick_file;
+  const st = await getJSON("/api/ingest");
+  if (st.state === "running") { showIngest(st); pollIngest(); }
+  else { ingestInfo = null; $("#ing-form").hidden = $("#ing-log").hidden = true; $("#ing-start").disabled = true; ingMsg("", true); }
+  $("#ingestdlg").showModal();
+}
+
+async function readIngest() {
+  const path = $("#ing-path").value.trim();
+  if (!path) return ingMsg("Choose an .h5ad file first", false);
+  ingMsg("reading the file (cell metadata only)…", true);
+  $("#ing-start").disabled = true;
+  try { ingestInfo = await sendJSON("/api/ingest/inspect", { path }); }
+  catch (e) { $("#ing-form").hidden = true; return ingMsg(e.message, false); }
+  const i = ingestInfo;
+  $("#ing-path").value = i.path;
+  $("#ing-summary").textContent = `${i.n_cells.toLocaleString()} cells · ${i.n_genes.toLocaleString()} genes · `
+    + (i.spatial ? `coordinates from ${i.spatial}` : "no coordinates");
+  const opt = (c) => `<option value="${esc(c.name)}">${esc(c.name)} (${c.n_unique}: ${esc(c.examples.join(", "))}${c.n_unique > c.examples.length ? ", …" : ""})</option>`;
+  for (const sel of document.querySelectorAll("#ing-form select[data-role]")) {
+    const role = sel.dataset.role, required = role === "sample" || role === "cell_type";
+    sel.innerHTML = (required ? '<option value="">choose…</option>' : '<option value="">none</option>') + i.columns.map(opt).join("");
+    sel.value = i.roles[role] || "";
+  }
+  $("#ing-layer").innerHTML = ['<option value="X">main matrix (X)</option>', ...i.layers.map((l) => `<option value="${esc(l)}">layer ${esc(l)}</option>`)].join("");
+  $("#ing-id").value = i.id; $("#ing-name").value = i.name;
+  const warn = [];
+  if (!i.spatial) warn.push("No spatial coordinates found: Lightyear needs obsm['spatial'] (or x/y columns in obs).");
+  if (i.x_counts) warn.push("The main matrix looks like raw counts; Lightyear expects log-normalised values"
+    + (i.layers.length ? ". If one of the layers is log-normalised, choose it under Expression values." : " (normalise and log1p before adding)."));
+  $("#ing-warn").textContent = warn.join(" "); $("#ing-warn").hidden = !warn.length;
+  $("#ing-form").hidden = false;
+  $("#ing-start").disabled = !i.spatial;
+  ingMsg("Check the columns, then add the dataset.", true);
+}
+
+function showIngest(st) {
+  $("#ing-log").hidden = false;
+  $("#ing-log").textContent = st.log.join("\n");
+  $("#ing-log").scrollTop = $("#ing-log").scrollHeight;
+  $("#ing-cancel").hidden = st.state !== "running";
+  $("#ing-start").disabled = st.state === "running";
+  if (st.state === "running") ingMsg(`adding ${st.id}… ${st.elapsed_s} s (large datasets take several minutes)`, true);
+}
+
+function pollIngest() {
+  clearTimeout(ingestTimer);
+  ingestTimer = setTimeout(async () => {
+    const st = await getJSON("/api/ingest");
+    showIngest(st);
+    if (st.state === "running") return pollIngest();
+    if (st.state === "done") return ingestDone(st.id);
+    ingMsg(st.state === "cancelled" ? "Cancelled; nothing was added." : `Failed: ${st.error}`, false);
+  }, 1000);
+}
+
+async function startIngest() {
+  const i = ingestInfo, roles = {};
+  document.querySelectorAll("#ing-form select[data-role]").forEach((s) => roles[s.dataset.role] = s.value);
+  try {
+    showIngest(await sendJSON("/api/ingest", { path: i.path, id: $("#ing-id").value.trim(), name: $("#ing-name").value.trim(),
+      roles, layer: $("#ing-layer").value, organism: $("#ing-organism").value, description: $("#ing-desc").value }));
+  } catch (e) { return ingMsg(e.message, false); }
+  pollIngest();
+}
+
+async function ingestDone(id) {
+  datasets = await getJSON("/api/datasets");
+  try { localStorage.setItem("lightyear.ds", id); } catch (e) {}
+  $("#ingestdlg").close();
+  if (setup?.ready) { $("#setupdlg").close(); fillDatasets(); }
+  else setupMsg(`Dataset ${id} added. Finish choosing the model, then press Start.`, true);
+}
+
+// Dropping a file: the app window's native side sends its full path to lightyearDropped. A plain browser page
+// never learns where a dropped file lives, so there the drop only explains what to do instead.
+window.lightyearDropped = async (path) => {
+  $("#dropzone").hidden = true;
+  const st = await getJSON("/api/ingest");
+  if (!$("#ingestdlg").open) await openIngest();
+  if (st.state === "running") return;
+  if (!/\.h5ad$/i.test(path)) { $("#ing-path").value = path; return ingMsg("That isn't an .h5ad file. Lightyear reads AnnData .h5ad files.", false); }
+  $("#ing-path").value = path;
+  readIngest();
+};
+
+function wireDrop() {
+  let depth = 0;
+  const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+  document.addEventListener("dragenter", (e) => { if (hasFiles(e)) { depth++; $("#dropzone").hidden = false; } });
+  document.addEventListener("dragleave", () => { if (--depth <= 0) { depth = 0; $("#dropzone").hidden = true; } });
+  document.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
+  document.addEventListener("drop", (e) => {
+    e.preventDefault(); depth = 0;
+    setTimeout(() => {  // in the app window the native handler follows with the path
+      if ($("#dropzone").hidden) return;
+      $("#dropzone").hidden = true;
+      if (!setup?.can_pick_file) { openIngest(); ingMsg("In a browser, dropped files have no path: paste the file's path above instead.", false); }
+    }, 1500);
+  });
+}
+
+function wireIngest() {
+  wireDrop();
+  $("#add-ds").onclick = $("#setup-add-ds").onclick = openIngest;
+  $("#ingest-close").onclick = () => { clearTimeout(ingestTimer); $("#ingestdlg").close(); };  // a running ingest continues
+  $("#ing-read").onclick = readIngest;
+  $("#ing-path").onkeydown = (e) => { if (e.key === "Enter") readIngest(); };
+  $("#ing-pick").onclick = async () => {
+    const r = await sendJSON("/api/pick-file", {});
+    if (r.path) { $("#ing-path").value = r.path; readIngest(); }
+  };
+  $("#ing-start").onclick = startIngest;
+  $("#ing-cancel").onclick = async () => showIngest(await sendJSON("/api/ingest", null, "DELETE"));
+}
+
 async function init() {
   wireSetup();
+  wireIngest();
   $("#dataset").onchange = (e) => selectDataset(e.target.value);
   $("#settings").onclick = () => openSetup(false);
   $("#newchat").onclick = () => ds && connect();

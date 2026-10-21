@@ -17,6 +17,7 @@
     </div>
     <div class="controls">
       <select id="dataset" aria-label="dataset"></select>
+      <button id="add-ds" title="Add a dataset from an .h5ad file">+ Dataset</button>
       <button id="newchat" title="Start a new conversation">New chat</button>
       <button id="settings" title="Model provider, sign-in and datasets folder">⚙ <span id="provider-label">Setup</span></button>
       <span id="status" class="status">connecting…</span>
@@ -30,6 +31,7 @@
           <h2 id="ds-title"></h2>
           <p id="ds-desc"></p>
           <div id="examples" class="examples"></div>
+          <p class="drophint muted">To add another dataset, drop its <code>.h5ad</code> file on this window or use + Dataset.</p>
         </div>
       </div>
       <form id="ask">
@@ -105,10 +107,46 @@
 
     <p id="setup-msg" class="msgline"></p>
     <div class="actions">
+      <button id="setup-add-ds" class="left">Add dataset…</button>
       <button id="setup-recheck">Check again</button>
       <button id="setup-start" class="primary">Start</button>
     </div>
   </dialog>
+
+  <dialog id="ingestdlg">
+    <button class="close" id="ingest-close">×</button>
+    <h2>Add a dataset</h2>
+    <p class="muted">Lightyear reads an AnnData file (<code>.h5ad</code>) with spatial coordinates and builds a local
+      copy it can query quickly. This runs on this computer; nothing is uploaded.</p>
+    <label class="field">File
+      <span class="pathrow"><input id="ing-path" placeholder="/path/to/data.h5ad"><button type="button" id="ing-pick" hidden>Choose…</button><button type="button" id="ing-read">Read</button></span></label>
+
+    <div id="ing-form" hidden>
+      <p id="ing-summary" class="summary"></p>
+      <p id="ing-warn" class="warn" hidden></p>
+      <div class="grid2">
+        <label class="field">Short name <input id="ing-id" placeholder="e.g. cuprizone"></label>
+        <label class="field">Display name <input id="ing-name"></label>
+        <label class="field">Replicate (animal / patient / sample) <select id="ing-sample" data-role="sample"></select></label>
+        <label class="field">Cell type <select id="ing-cell_type" data-role="cell_type"></select></label>
+        <label class="field">Condition (optional) <select id="ing-group" data-role="group"></select></label>
+        <label class="field">Tissue piece, if not one per replicate (optional) <select id="ing-section" data-role="section"></select></label>
+        <label class="field">Expression values <select id="ing-layer"></select></label>
+        <label class="field">Organism <select id="ing-organism"><option value="mouse">mouse</option><option value="human">human</option><option value="">other</option></select></label>
+      </div>
+      <label class="field">Description (optional; helps the model) <textarea id="ing-desc" rows="3"
+        placeholder="Technology, tissue, conditions and what the groups mean"></textarea></label>
+    </div>
+
+    <pre id="ing-log" class="log" hidden></pre>
+    <p id="ing-msg" class="msgline"></p>
+    <div class="actions">
+      <button id="ing-cancel" hidden>Cancel</button>
+      <button id="ing-start" class="primary" disabled>Add dataset</button>
+    </div>
+  </dialog>
+
+  <div id="dropzone" hidden><div>Drop an <code>.h5ad</code> file to add it as a dataset</div></div>
 
   <script src="/static/app.js"></script>
 </body>

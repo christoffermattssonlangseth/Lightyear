@@ -1,10 +1,11 @@
 """Release gate: run the *built* app as a brand-new user and walk through the setup screen in a browser.
 
     python packaging/check_first_run.py dist/Lightyear.app [--ask]
+    python packaging/check_first_run.py source               # the same walk-through against the source tree
 
 The app runs with an empty HOME (no settings, no ~/Lightyear, no CLI sign-ins), exactly as after a download.
 Checks: the setup screen opens without errors; Start with the prefilled defaults gives the right next step
-(not an error); the bundled `ingest` builds a store; once a dataset and a provider exist the chat connects
+(not an error); adding an .h5ad through the Add dataset dialog builds a store; once a dataset and a provider exist the chat connects
 and the side panels load. With Codex signed in on this machine (~/.codex), the last part uses it; --ask also
 sends one real question. Any failure exits non-zero, so build_mac.sh stops before notarising.
 Needs numpy, anndata and playwright (with Chrome) in the Python running this script.
@@ -56,13 +57,18 @@ def main():
     ap.add_argument("app")
     ap.add_argument("--ask", action="store_true", help="also ask one real question (uses the provider)")
     args = ap.parse_args()
-    binary = Path(args.app) / "Contents" / "MacOS" / "Lightyear"
-    if not binary.exists():
-        fail(f"no app binary at {binary}")
+    if args.app == "source":
+        launch = [sys.executable, "-m", "lightyear.cli"]
+    else:
+        binary = Path(args.app) / "Contents" / "MacOS" / "Lightyear"
+        if not binary.exists():
+            fail(f"no app binary at {binary}")
+        launch = [str(binary)]
 
     tmp = Path(tempfile.mkdtemp(prefix="lightyear-firstrun-"))
     home = tmp / "home"
     home.mkdir()
+    stores = tmp / "stores" if args.app == "source" else home / "Lightyear" / "stores"  # each one's default
     env = {k: v for k, v in os.environ.items() if not k.startswith("LIGHTYEAR_")}
     env["HOME"] = str(home)
     real_codex = Path.home() / ".codex"
@@ -70,7 +76,7 @@ def main():
         env["CODEX_HOME"] = str(real_codex)   # let Codex see this machine's sign-in; nothing else of ours
     port = free_port()
     log = open(tmp / "app.log", "w")
-    proc = subprocess.Popen([str(binary), "gui", "--no-browser", "--port", str(port)], env=env,
+    proc = subprocess.Popen(launch + ["gui", "--no-browser", "--port", str(port)], env=env, cwd=str(tmp),
                             stdout=log, stderr=subprocess.STDOUT)
     url = f"http://127.0.0.1:{port}"
     try:
@@ -119,17 +125,30 @@ def main():
             msg = pg.text_content("#setup-msg")
             if "folder" in msg.lower() or "error" in msg.lower():
                 fail(f"Start with defaults shows {msg!r}")
-            if not (home / "Lightyear" / "stores").is_dir():
-                fail("default datasets folder ~/Lightyear/stores was not created")
+            if not (stores).is_dir():
+                fail(f"default datasets folder {stores} was not created")
             print(f"defaults ok: {msg!r}")
 
-            # 3. the bundled CLI ingests a dataset into the default folder
+            # 3. add a dataset the way a user does: Add dataset…, give the file, accept the guessed columns
             toy_h5ad(tmp / "toy.h5ad")
-            r = subprocess.run([str(binary), "ingest", str(tmp / "toy.h5ad"), str(home / "Lightyear" / "stores" / "toy")],
-                               env=env, capture_output=True, text=True, timeout=900)
-            if r.returncode or not (home / "Lightyear" / "stores" / "toy" / "meta.json").exists():
-                fail(f"bundled ingest failed:\n{(r.stdout + r.stderr)[-3000:]}")
-            print("bundled ingest ok")
+            pg.click("#setup-add-ds")
+            pg.wait_for_selector("#ingestdlg[open]")
+            pg.fill("#ing-path", str(tmp / "toy.h5ad"))
+            pg.click("#ing-read")
+            pg.wait_for_selector("#ing-form:not([hidden])", timeout=60000)
+            got = {r: pg.input_value(f"#ing-{r}") for r in ("sample", "cell_type", "group")}
+            if got != {"sample": "sample", "cell_type": "cell_type", "group": "condition"}:
+                fail(f"guessed columns {got}")
+            if pg.is_visible("#ing-warn"):
+                fail("warning on a clean file: " + pg.text_content("#ing-warn"))
+            pg.fill("#ing-id", "toy")
+            pg.click("#ing-start")
+            pg.wait_for_function("!document.querySelector('#ingestdlg').open", timeout=900000)
+            if not (stores / "toy" / "meta.json").exists():
+                fail(f"Add dataset finished but no store in {stores}/toy:\n" + pg.text_content("#ing-log"))
+            if any(p.name.startswith(".") for p in (stores).iterdir()):
+                fail("build folder left behind in the datasets folder")
+            print("add dataset ok: " + pg.text_content("#setup-msg"))
 
             # 4. with a signed-in provider, setup completes and the chat connects
             pg.click("#setup-recheck")

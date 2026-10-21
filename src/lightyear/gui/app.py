@@ -22,7 +22,7 @@ from .. import tools
 from ..claims import fingerprint, load_ledger
 from ..runtime import FROZEN
 from ..store import Store
-from . import auth
+from . import auth, ingest_job
 from .runners import make_runner
 from .settings import Settings, set_key
 
@@ -43,7 +43,8 @@ def stores_root() -> Path:
 
 
 def discover(root: Path) -> dict[str, Path]:
-    return {p.parent.name: p.parent.resolve() for p in sorted(Path(root).glob("*/meta.json"))}
+    return {p.parent.name: p.parent.resolve() for p in sorted(Path(root).glob("*/meta.json"))
+            if not p.parent.name.startswith(".")}  # .ingest-* = a store still being built
 
 
 def _stores() -> dict[str, Path]:
@@ -130,6 +131,7 @@ def setup_status():
     st["stores_dir"] = str(stores_root())
     st["frozen"] = FROZEN
     st["can_pick_folder"] = WINDOW is not None and not STORES_OVERRIDE
+    st["can_pick_file"] = WINDOW is not None
     return st
 
 
@@ -141,6 +143,43 @@ def pick_folder():
     import webview
     picked = WINDOW.create_file_dialog(webview.FileDialog.FOLDER, directory=str(stores_root().parent))
     return {"path": picked[0] if picked else None}
+
+
+@app.post("/api/pick-file")
+def pick_file():
+    if WINDOW is None:
+        raise HTTPException(400, "file picker only available in the app window")
+    import webview
+    picked = WINDOW.create_file_dialog(webview.FileDialog.OPEN, directory=str(Path.home()),
+                                       file_types=("AnnData (*.h5ad)", "All files (*.*)"))
+    return {"path": picked[0] if picked else None}
+
+
+# -- add a dataset (runs `lightyear ingest` locally) ----------------------------------------------
+@app.post("/api/ingest/inspect")
+def ingest_inspect(body: dict):
+    try:
+        return ingest_job.inspect(body.get("path") or "")
+    except Exception as e:  # unreadable file: show the reason in the dialog
+        raise HTTPException(400, f"Could not read the file: {e}")
+
+
+@app.post("/api/ingest")
+def ingest_start(body: dict):
+    try:
+        return ingest_job.JOB.start(stores_root(), body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/ingest")
+def ingest_status():
+    return ingest_job.JOB.status()
+
+
+@app.delete("/api/ingest")
+def ingest_cancel():
+    return ingest_job.JOB.cancel()
 
 
 @app.post("/api/setup")
@@ -252,6 +291,21 @@ def _free_port(host: str, port: int) -> int:
     raise SystemExit(f"no free port in {port}-{port + 29}")
 
 
+def _bind_drop():
+    """Files dropped on the window: only the native side knows their full path, so hand it to the page."""
+    from webview.dom import DOMEventHandler
+
+    def on_drop(e):
+        paths = [f.get("pywebviewFullPath") for f in e.get("dataTransfer", {}).get("files", [])]
+        paths = [p for p in paths if p]
+        if paths:
+            WINDOW.evaluate_js(f"window.lightyearDropped({json.dumps(paths[0])})")
+
+    doc = WINDOW.dom.document
+    doc.events.dragover += DOMEventHandler(lambda e: None, True, False, debounce=500)
+    doc.events.drop += DOMEventHandler(on_drop, True, False)
+
+
 def main(stores: str | None = None, host: str = "127.0.0.1", port: int = 8790, open_browser: bool = True,
          window: bool = False):
     """Serve the app. window=True opens it in a native window (pywebview) and quits when that closes."""
@@ -283,5 +337,6 @@ def main(stores: str | None = None, host: str = "127.0.0.1", port: int = 8790, o
         time.sleep(0.05)
     global WINDOW
     WINDOW = webview.create_window("Lightyear", url, width=1360, height=900, min_size=(760, 560))
+    WINDOW.events.loaded += _bind_drop  # on every page load: the DOM handlers go with the page
     webview.start()
     server.should_exit = True

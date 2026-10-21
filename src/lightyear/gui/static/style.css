@@ -130,3 +130,21 @@ dialog img { max-width: 100%; }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .pathrow { display: flex; gap: 8px; }
 .pathrow input { flex: 1; }
+
+/* add a dataset */
+#ingestdlg { width: min(720px, 94vw); }
+#ingestdlg h2 { margin: 0 0 6px; }
+#ingestdlg > p.muted { font-size: 13px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+@media (max-width: 560px) { .grid2 { grid-template-columns: 1fr; } }
+.field select, .field textarea { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 8px; font: inherit; color: var(--ink); }
+.summary { font-size: 13px; margin: 10px 0 4px; }
+pre.log { background: var(--code); border-radius: 8px; padding: 8px 10px; font-size: 11.5px; max-height: 220px;
+  overflow: auto; white-space: pre-wrap; margin: 10px 0 0; }
+.actions .left { margin-right: auto; }
+#dropzone { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 14%, transparent); }
+#dropzone div { border: 2px dashed var(--accent); border-radius: 16px; padding: 40px 56px; background: var(--panel);
+  font-size: 17px; }
+.drophint { font-size: 12.5px; margin-top: 18px; }

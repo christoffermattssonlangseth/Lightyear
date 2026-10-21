@@ -91,7 +91,9 @@ SIGN_ID="Developer ID Application: …" NOTARY_PROFILE=lightyear-notary packagin
 
 The app (about 550 MB, a 250 MB `.dmg`) bundles Python, the scientific stack, Lightyear and the Claude Code
 binary that the Agent SDK drives. Double-clicked, it opens the chat in its own window. Datasets are read
-from `~/Lightyear/stores` (changeable on the setup screen); the binary is also the full CLI
+from `~/Lightyear/stores` (changeable on the setup screen). To add one, drop an `.h5ad` file on the window
+(or use **+ Dataset**): the app reads the cell metadata, proposes the replicate, cell type and condition
+columns for you to confirm, and runs `lightyear ingest` locally. The binary is also the full CLI
 (`Lightyear.app/Contents/MacOS/Lightyear ingest …`). With `SIGN_ID` every library is signed with the hardened
 runtime (the bundled Claude Code binary keeps Anthropic's own signature); with `NOTARY_PROFILE` the app and
 the `.dmg` are notarised and stapled, so they open without Gatekeeper warnings. Unsigned builds need

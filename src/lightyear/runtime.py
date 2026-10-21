@@ -22,6 +22,11 @@ def python_cmd() -> list[str]:
     return [sys.executable, "run-script"] if FROZEN else [sys.executable]
 
 
+def cli_cmd() -> list[str]:
+    """Command prefix for the `lightyear` CLI."""
+    return [sys.executable] if FROZEN else [sys.executable, "-m", "lightyear.cli"]
+
+
 def app_dir() -> Path:
     """Per-user settings directory ($LIGHTYEAR_HOME overrides)."""
     if os.environ.get("LIGHTYEAR_HOME"):
