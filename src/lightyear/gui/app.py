@@ -32,6 +32,7 @@ DEFAULT_STORES = Path.home() / "Lightyear" / "stores" if FROZEN else Path("store
 
 app = FastAPI(title="Lightyear")
 STORES_OVERRIDE: Path | None = None   # --stores on the command line wins over the settings
+WINDOW = None                         # the pywebview window, when running as the desktop app
 
 
 def stores_root() -> Path:
@@ -123,7 +124,18 @@ def setup_status():
     st = auth.status()
     st["stores_dir"] = str(stores_root())
     st["frozen"] = FROZEN
+    st["can_pick_folder"] = WINDOW is not None and not STORES_OVERRIDE
     return st
+
+
+@app.post("/api/pick-folder")
+def pick_folder():
+    """Native folder chooser (only in the app window; a browser page can't see real paths)."""
+    if WINDOW is None:
+        raise HTTPException(400, "folder picker only available in the app window")
+    import webview
+    picked = WINDOW.create_file_dialog(webview.FileDialog.FOLDER, directory=str(stores_root().parent))
+    return {"path": picked[0] if picked else None}
 
 
 @app.post("/api/setup")
@@ -139,10 +151,13 @@ def setup_save(body: dict):
     for prov, model in (body.get("model") or {}).items():
         if prov in ("claude", "codex"):
             s.model[prov] = (model or "").strip() or None
-    if "stores_dir" in body and not STORES_OVERRIDE:
-        d = Path(os.path.expanduser(body["stores_dir"] or "")).resolve()
+    if body.get("stores_dir") and not STORES_OVERRIDE:
+        d = Path(os.path.expanduser(body["stores_dir"])).resolve()
+        if d == DEFAULT_STORES.resolve():
+            d.mkdir(parents=True, exist_ok=True)  # the default is ours to create
         if not d.is_dir():
-            raise HTTPException(400, f"not a folder: {d}")
+            raise HTTPException(400, f"Folder not found: {d}. Under Advanced, set the datasets folder to the folder "
+                                     "that holds your dataset stores.")
         s.stores_dir = str(d)
     s.save()
     return setup_status()
@@ -237,6 +252,8 @@ def main(stores: str | None = None, host: str = "127.0.0.1", port: int = 8790, o
     import uvicorn
     global STORES_OVERRIDE
     port = _free_port(host, port)
+    if FROZEN and not stores:
+        DEFAULT_STORES.mkdir(parents=True, exist_ok=True)
     if stores:
         STORES_OVERRIDE = Path(stores).resolve()
     url = f"http://{host}:{port}"
@@ -257,6 +274,7 @@ def main(stores: str | None = None, host: str = "127.0.0.1", port: int = 8790, o
     import time
     while not server.started:
         time.sleep(0.05)
-    webview.create_window("Lightyear", url, width=1360, height=900, min_size=(760, 560))
+    global WINDOW
+    WINDOW = webview.create_window("Lightyear", url, width=1360, height=900, min_size=(760, 560))
     webview.start()
     server.should_exit = True

@@ -144,6 +144,7 @@ function renderSetup() {
   }
   if (!$("#model").dataset.touched) $("#model").value = (st.model || {})[prov] || "";
   if (!$("#stores-dir").dataset.touched) $("#stores-dir").value = st.stores_dir || "";
+  $("#pick-folder").hidden = !st.can_pick_folder;
   $("#setup-close").hidden = !st.ready;
   $("#provider-label").textContent = st.ready ? NAMES[st.provider] : "Setup";
 }
@@ -156,6 +157,7 @@ async function openSetup(force) {
 }
 
 function setupMsg(text, ok) { const el = $("#setup-msg"); el.textContent = text; el.className = "msgline " + (ok ? "ok" : "bad"); }
+function showFolder() { $(".advanced").open = true; $("#stores-dir").focus(); }
 
 function wireSetup() {
   const dlg = $("#setupdlg");
@@ -163,6 +165,10 @@ function wireSetup() {
   $("#setup-close").onclick = () => dlg.close();
   dlg.querySelectorAll('input[type="radio"]').forEach((r) => r.onchange = () => { if (r.name === "provider") $("#model").dataset.touched = ""; renderSetup(); });
   $("#model").oninput = $("#stores-dir").oninput = (e) => e.target.dataset.touched = "1";
+  $("#pick-folder").onclick = async () => {
+    const r = await sendJSON("/api/pick-folder", {});
+    if (r.path) { $("#stores-dir").value = r.path; $("#stores-dir").dataset.touched = "1"; }
+  };
   $("#setup-recheck").onclick = async () => { setupMsg("checking…", true); setup = await getJSON("/api/setup"); renderSetup(); setupMsg("", true); };
   dlg.querySelectorAll(".keyrow").forEach((row) => {
     const p = row.dataset.key, inp = row.querySelector("input");
@@ -181,12 +187,12 @@ function wireSetup() {
       setup = await sendJSON("/api/setup", {
         provider: prov, auth: { claude: radio("claude-auth"), codex: radio("codex-auth") },
         model: { [prov]: $("#model").value }, stores_dir: $("#stores-dir").value || undefined });
-    } catch (e) { return setupMsg(e.message, false); }
+    } catch (e) { if (/folder/i.test(e.message)) showFolder(); return setupMsg(e.message, false); }
     renderSetup();
     if (!setup.ready) return setupMsg(prov === "codex" && !setup.codex.installed ? "Install the Codex CLI first."
       : radio(`${prov}-auth`) === "api_key" ? "Save a working API key first." : "Not signed in yet - see the note above.", false);
     datasets = await getJSON("/api/datasets");
-    if (!datasets.length) return setupMsg(`No datasets in ${setup.stores_dir}. Point the datasets folder at your stores.`, false);
+    if (!datasets.length) { showFolder(); return setupMsg(`No datasets in ${setup.stores_dir} yet. Choose the folder that holds your dataset stores (each made with lightyear ingest).`, false); }
     dlg.close();
     fillDatasets();
   };

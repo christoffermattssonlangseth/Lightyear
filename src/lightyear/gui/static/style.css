@@ -127,3 +127,5 @@ dialog img { max-width: 100%; }
 .msgline.ok { color: var(--muted); } .msgline.bad { color: var(--fragile); }
 .actions { display: flex; justify-content: flex-end; gap: 8px; }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.pathrow { display: flex; gap: 8px; }
+.pathrow input { flex: 1; }
